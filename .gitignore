@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.ai/
+work/
+release/
+build/
+dist/
+*.spec
+media-probe
+.venv/

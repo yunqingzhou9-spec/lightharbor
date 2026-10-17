@@ -1,5 +1,6 @@
 """Pure in-memory shooting groups. No filesystem writes or image decoding."""
 import copy
+import os
 import datetime as dt
 import math
 from pathlib import Path
@@ -15,6 +16,8 @@ def folder_name(value):
     value = str(value).strip()
     if not value or value.startswith('.') or any(c in value for c in '/\\:') or any(ord(c) < 32 for c in value) or len(value.encode('utf-8')) > 180:
         raise ValueError('文件夹名称不能为空、以点开头、包含 / \\ : 或超过 180 字节')
+    if os.name == 'nt' and (any(c in value for c in '<>"|?*') or value.endswith(('.', ' ')) or re.fullmatch(r'(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?', value, re.I)):
+        raise ValueError('Windows 不支持此文件夹名，请修改名称')
     return value
 
 def timelapse_name(start, end):
@@ -188,13 +191,13 @@ def refresh(plan):
                           next(iter(kinds)) if len(kinds)==1 else '其他文件')
                 parts.append(category)
                 if g['name']==category:group_parts=[]
-        g['folder']=str(Path(*parts,*group_parts))
+        g['folder']=Path(*parts,*group_parts).as_posix()
         for sid in g['shots']:
             shot=plan['shots'][sid]
             for rid in shot['rows']:
                 r=plan['rows'][rid]
                 r['group']=g['id'];r['excluded']=shot['excluded']
-                r['target']=str(Path(g['folder'],r['format'],Path(r['source']).name))
+                r['target']=Path(g['folder'],r['format'],Path(r['source']).name).as_posix()
     folders=[g['folder'].casefold() for g in plan['groups']]
     if len(folders)!=len(set(folders)):raise ValueError('同一日期存在同名文件夹，请改名或合并')
 

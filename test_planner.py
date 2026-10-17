@@ -147,7 +147,7 @@ class ExecutionTests(unittest.TestCase):
             p=self.src/r['relative'];p.parent.mkdir(exist_ok=True);p.write_bytes(f'content-{i}'.encode())
             r.update(source=str(p),size=p.stat().st_size,fingerprint=app.fingerprint(p))
         self.org=app.Organizer();self.org.rows=rows;self.org.source=self.src;self.org.destination=self.dest
-        self.org.plan=planner.build_plan(rows,{'min_frames':3});self.org.revision=1;self.org.state.update(phase='ready');self.org._publish()
+        self.org.plan=planner.build_plan(rows,{'min_frames':3,'duplicate_mode':'content'});self.org.revision=1;self.org.state.update(phase='ready');self.org._publish()
     def tearDown(self):self.tmp.cleanup()
     def identity(self):return {'plan_id':self.org.plan['id'],'revision':self.org.plan['revision']}
     def wait(self,phase):

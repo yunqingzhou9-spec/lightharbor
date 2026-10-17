@@ -19,6 +19,7 @@ import time
 import webbrowser
 import unicodedata
 import planner
+from copy_workflow import CopyWorkflow, data_directory
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE = Path(__file__).resolve().parent
@@ -82,12 +83,15 @@ class Probe:
     def __init__(self):
         self.proc = None
         helper = BASE / 'media-probe'
-        if helper.is_file():
+        if os.name != 'nt' and helper.is_file():
             try:
                 self.proc = subprocess.Popen([str(helper)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
             except OSError: pass
 
     def read(self, path, scene):
+        if os.name == 'nt':
+            from windows_media import metadata
+            return metadata(path, scene)
         if not self.proc: return {'warning': '图片读取组件不可用；使用修改日期，地点和景色标记为未知'}
         try:
             self.proc.stdin.write(json.dumps({'path': str(path), 'scene': scene}) + '\n')
@@ -147,7 +151,7 @@ def scan(source, destination, options, progress=lambda *_: None, cancelled=lambd
                     if options.get('type', True): parts += [media_kind]
                     if options.get('location'): parts += [place]
                     if options.get('scene'): parts += [scene]
-                    rows.append({'source': str(p), 'relative': str(p.relative_to(source)), 'target': str(Path(*parts, name)), 'size': fp[2], 'fingerprint': fp, 'date_source': date_source, 'date':date.strftime('%Y-%m-%d'), 'capture_time':date.isoformat(), 'reliable_time':reliable, 'camera':meta.get('camera',''), 'kind':media_kind, 'location': place, 'scene': scene, 'confidence': round(confidence, 3), 'warning': meta.get('warning', '')})
+                    rows.append({'source': str(p), 'relative': p.relative_to(source).as_posix(), 'target': Path(*parts, name).as_posix(), 'size': fp[2], 'fingerprint': fp, 'date_source': date_source, 'date':date.strftime('%Y-%m-%d'), 'capture_time':date.isoformat(), 'reliable_time':reliable, 'camera':meta.get('camera',''), 'kind':media_kind, 'location': place, 'scene': scene, 'confidence': round(confidence, 3), 'warning': meta.get('warning', '')})
                     progress(len(rows), str(p.relative_to(source)))
                 except (OSError, ValueError) as exc: warnings.append(f'{p.relative_to(source)}：{exc}')
     finally: probe.close()
@@ -175,7 +179,7 @@ def safe_folder(root, relative):
     return current
 
 
-def copy_one(row, source_root, destination, cancelled=lambda: False, exact=False):
+def copy_one(row, source_root, destination, cancelled=lambda: False, exact=False, allow_duplicate=True, progress=lambda amount: None):
     source = Path(row['source'])
     if source.is_symlink() or source.resolve() != source or source_root not in source.parents:
         raise ValueError('来源路径已改变')
@@ -183,7 +187,8 @@ def copy_one(row, source_root, destination, cancelled=lambda: False, exact=False
     relative = Path(row['target'])
     if relative.is_absolute() or '..' in relative.parts: raise ValueError('目标路径无效')
     parent = safe_folder(destination, relative.parent) if relative.parent != Path('.') else destination
-    expected = digest(source, cancelled)
+    expected = digest(source, cancelled) if allow_duplicate else None
+    streaming_hash = hashlib.sha256()
     if fingerprint(source) != row['fingerprint']: raise ValueError('读取时来源发生变化')
     original = parent / relative.name
     counter = 0
@@ -194,7 +199,7 @@ def copy_one(row, source_root, destination, cancelled=lambda: False, exact=False
             writer = target.open('xb')
             break
         except FileExistsError:
-            if not target.is_symlink() and target.is_file() and target.stat().st_size == row['size'] and digest(target, cancelled) == expected:
+            if allow_duplicate and not target.is_symlink() and target.is_file() and target.stat().st_size == row['size'] and digest(target, cancelled) == expected:
                 return {'status': '重复跳过', 'target': str(target), 'sha256': expected}
             if exact: raise ValueError('目标在确认后发生冲突，请重新检查计划')
     try:
@@ -202,8 +207,11 @@ def copy_one(row, source_root, destination, cancelled=lambda: False, exact=False
             while chunk := reader.read(1024 * 1024):
                 if cancelled(): raise InterruptedError('已停止')
                 writer.write(chunk)
+                streaming_hash.update(chunk)
+                progress(len(chunk))
             writer.flush()
             os.fsync(writer.fileno())
+        if expected is None: expected = streaming_hash.hexdigest()
         if fingerprint(source) != row['fingerprint'] or digest(target, cancelled) != expected:
             raise ValueError('复制校验失败或来源发生变化')
         os.utime(target, ns=(row['fingerprint'][3], row['fingerprint'][3]))
@@ -213,8 +221,8 @@ def copy_one(row, source_root, destination, cancelled=lambda: False, exact=False
         raise
 
 
-class Organizer:
-    def __init__(self):
+class Organizer(CopyWorkflow):
+    def __init__(self, store=None):
         self.lock = threading.RLock()
         self.cancel = threading.Event()
         self.rows = []
@@ -222,17 +230,40 @@ class Organizer:
         self.history = []
         self.revision = 0
         self.source = self.destination = None
-        self.state = {'phase':'idle', 'count':0, 'current':'', 'warnings':[], 'results':[], 'version':2}
+        self.state = {'phase':'idle', 'count':0, 'current':'', 'warnings':[], 'results':[], 'version':3}
+        self.init_workflow(store)
 
     def snapshot(self):
         with self.lock:
-            result = copy.deepcopy(self.state)
-            result['results'] = result.get('results', [])[-1000:]
+            rows = self.state.get('results', [])
+            result = copy.deepcopy({key: value for key, value in self.state.items() if key != 'results'})
+            result['result_counts'] = {status: sum(row.get('status') == status for row in rows)
+                                       for status in ('已复制', '重复跳过', '失败')}
+            result['processed'] = len(rows)
+            result['remaining'] = max(0, self.state.get('included', 0) - len(rows))
+            result['results'] = copy.deepcopy(rows[-1000:])
+            result['results_total'] = len(rows)
+            result['saved_tasks'] = copy.deepcopy(self.saved_tasks)
+            result['persistence'] = self.store is not None
+            result['transfer'] = self.transfer_snapshot()
+            result['completion'] = self.completion_summary(rows) if result.get('phase') in ('done','cancelled','error') else None
+            result['import_overview'] = self.import_overview() if self.plan and 'rows' in self.plan else []
             return result
 
+    def result_page(self, payload):
+        with self.lock:
+            self._check(payload, ('copying', 'paused', 'done', 'cancelled', 'error'))
+            offset = payload.get('offset', 0)
+            if type(offset) is not int or offset < 0:
+                raise ValueError('明细起始位置无效')
+            rows = self.state.get('results', [])
+            return {'results': copy.deepcopy(rows[offset:offset + 200]), 'total': len(rows)}
+
     def _publish(self):
-        active = [r for r in self.plan['rows'].values() if not r['excluded']]
-        self.state.update(plan_id=self.plan['id'], revision=self.plan['revision'], groups=planner.summaries(self.plan), count=len(self.rows), included=len(active), excluded=len(self.rows)-len(active), total_bytes=sum(r['size'] for r in active), can_undo=bool(self.history), source=str(self.source), destination=str(self.destination), options=self.plan['options'])
+        active = self.active_rows()
+        selected = self.active_shots()
+        self.state['scope_groups'] = {g['id']: sum(len(self.plan['shots'][sid]['rows']) for sid in g['shots'] if sid in selected) for g in self.plan['groups']}
+        self.state.update(plan_id=self.plan['id'], revision=self.plan['revision'], groups=planner.summaries(self.plan), count=len(self.rows), included=len(active), excluded=sum(bool(r['excluded']) for r in self.plan['rows'].values()), scope=self.plan.get('scope', {'mode':'all','shots':[]}), scope_shots=len(self.active_shots()), outside_scope=len(self.rows)-len(active)-sum(bool(r['excluded']) for r in self.plan['rows'].values()), total_bytes=sum(r['size'] for r in active), can_undo=bool(self.history), source=str(self.source), destination=str(self.destination), options=self.plan['options'])
 
     def _check(self, payload, phases=('ready','reviewing')):
         if self.state['phase'] not in phases or not self.plan: raise ValueError('当前不能调整或确认，请等待扫描完成')
@@ -241,14 +272,15 @@ class Organizer:
 
     def start_scan(self, payload):
         with self.lock:
-            if self.state['phase'] in ('scanning','preparing','copying'): raise ValueError('请等待当前任务完成')
+            if self.state['phase'] in ('scanning','preparing','copying','paused'): raise ValueError('请等待当前任务完成')
             if not payload.get('source') or not payload.get('destination'):raise ValueError('请填写来源和目标路径')
             source,dest=valid_roots(payload['source'],payload['destination'])
             options=payload.get('options',{})
+            if options.get('duplicate_mode','name') not in ('name','content'):raise ValueError('查重方式无效')
             minimum=int(options.get('min_frames',30));tolerance=float(options.get('tolerance',20))
             if not 3<=minimum<=100000 or not 5<=tolerance<=60:raise ValueError('连续张数 3–100000，间隔容差 5–60%')
             self.source,self.destination,self.rows=source,dest,[]
-            self.plan=None;self.history=[];self.cancel.clear()
+            self.plan=None;self.history=[];self.cancel.clear();self.init_insights()
             self.state={'phase':'scanning','count':0,'current':'','warnings':[],'results':[],'version':2,'source':str(source),'destination':str(dest),'options':options}
         threading.Thread(target=self._scan,args=(options,),daemon=True).start()
 
@@ -260,8 +292,10 @@ class Organizer:
             plan=planner.build_plan(rows,options)
             with self.lock:
                 self.rows=rows;self.plan=plan;self.revision=1
+            self.assess_imports()
+            with self.lock:
                 self.state.update(phase='cancelled' if self.cancel.is_set() else 'ready',warnings=warnings,metadata_warnings=sum(bool(r['warning']) for r in rows),fallback_dates=sum(not r['reliable_time'] for r in rows))
-                self._publish()
+                self._publish(); self.save_task()
         except Exception as exc:
             with self.lock:self.state.update(phase='error',error=str(exc))
 
@@ -285,146 +319,29 @@ class Organizer:
             # Undo always invalidates prior preflight too.
             planner.refresh(self.plan)
             self.state.update(phase='ready',preflight=None,error='',results=[])
-            self._publish()
+            self._publish(); self.save_task()
 
     def files(self,payload):
         with self.lock:
-            self._check(payload,('ready','reviewing','done','copying','cancelled'))
+            self._check(payload,('ready','reviewing','done','copying','paused','cancelled'))
             return planner.page(self.plan,payload.get('group'),int(payload.get('page',0)))
 
     def thumbnail(self,payload):
         with self.lock:
-            self._check(payload,('ready','reviewing','done','copying','cancelled'))
+            self._check(payload,('ready','reviewing','done','copying','paused','cancelled'))
             row=self.plan['rows'].get(str(payload.get('file')))
             if not row or row['kind'] not in ('照片','RAW原片'):raise ValueError('此文件没有照片缩略图')
             path=Path(row['source'])
             if path.resolve()!=path or fingerprint(path)!=row['fingerprint']:raise ValueError('来源已经变化，请重新扫描')
         try:
+            if os.name == 'nt':
+                from windows_media import thumbnail
+                return thumbnail(path)
             result=subprocess.run([str(BASE/'media-probe')],input=json.dumps({'path':str(path),'thumbnail':True})+'\n',text=True,capture_output=True,timeout=20)
             data=json.loads(result.stdout)
             return {'thumbnail':data.get('thumbnail'),'warning':data.get('warning','无法读取缩略图')}
         except Exception:return {'thumbnail':None,'warning':'此格式暂时无法预览，仍可按原文件复制'}
 
-    def prepare(self,payload):
-        with self.lock:
-            self._check(payload)
-            if not any(not s['excluded'] for s in self.plan['shots'].values()):raise ValueError('没有选中要复制的文件')
-            planner.refresh(self.plan)
-            self.cancel.clear();self.state.update(phase='preparing',current='检查来源和目标',error='')
-        threading.Thread(target=self._prepare,daemon=True).start()
-
-    def _prepare(self):
-        try:
-            active=[r for r in self.plan['rows'].values() if not r['excluded']]
-            # No destination directories created during scan, editing or preflight.
-            src,dest=valid_roots(self.source,self.destination)
-            if src!=self.source or dest!=self.destination:raise ValueError('来源或目标路径已经改变')
-            ancestor=dest
-            while not ancestor.exists():ancestor=ancestor.parent
-            if shutil.disk_usage(ancestor).free<sum(r['size'] for r in active):raise ValueError('目标剩余空间不足（保守按全部选中文件计算）')
-            for row in active:
-                p=Path(row['source'])
-                if p.resolve()!=p or fingerprint(p)!=row['fingerprint']:raise ValueError('来源扫描后已变化：'+row['relative'])
-            reserved={};hashes={};renamed=0;duplicates=0
-            def key(path):return unicodedata.normalize('NFD',str(path)).casefold()
-            def source_hash(row):
-                if row['id'] not in hashes:
-                    hashes[row['id']]=digest(row['source'],self.cancel.is_set)
-                    if fingerprint(Path(row['source']))!=row['fingerprint']:raise ValueError('读取时来源发生变化：'+row['relative'])
-                return hashes[row['id']]
-            for group in self.plan['groups']:
-                for sid in group['shots']:
-                    shot=self.plan['shots'][sid]
-                    if shot['excluded']:continue
-                    rows=[self.plan['rows'][rid] for rid in shot['rows']]
-                    suffix=0
-                    while True:
-                        proposals=[];conflict=False;dup_count=0
-                        for row in rows:
-                            rel=Path(row['target']);name=rel.name
-                            if suffix:
-                                # For IMG.RAW.xmp insert suffix before .RAW, preserving sidecar linkage.
-                                stem=rel.stem
-                                if rel.suffix.lower() in ('.xmp','.aae') and Path(stem).suffix:stem=Path(stem).stem+f'__{suffix}'+Path(stem).suffix
-                                else:stem+=f'__{suffix}'
-                                rel=rel.with_name(stem+rel.suffix)
-                            target=dest/rel
-                            for parent in [target.parent,*target.parent.parents]:
-                                if parent==dest.parent:break
-                                if parent.is_symlink() or (parent.exists() and not parent.is_dir()):raise ValueError('目标目录不是安全的普通目录：'+str(parent))
-                            previous=reserved.get(key(target))
-                            duplicate=False
-                            if previous:
-                                conflict=source_hash(previous)!=source_hash(row)
-                                duplicate=not conflict
-                            elif os.path.lexists(target):
-                                if target.is_symlink() or not target.is_file():conflict=True
-                                else:
-                                    duplicate=target.stat().st_size==row['size'] and digest(target,self.cancel.is_set)==source_hash(row)
-                                    conflict=not duplicate
-                            if conflict:break
-                            proposals.append((row,str(rel),duplicate));dup_count+=int(duplicate)
-                        if not conflict:break
-                        suffix+=1
-                        if self.cancel.is_set():raise InterruptedError('已停止检查')
-                    for row,relative,duplicate in proposals:
-                        row['target']=relative;row['duplicate']=duplicate
-                        reserved[key(dest/relative)]=row
-                        renamed+=int(bool(suffix))
-                    duplicates+=dup_count
-                    with self.lock:self.state['current']=rows[0]['relative']
-                    if self.cancel.is_set():raise InterruptedError('已停止检查')
-            with self.lock:
-                self.revision+=1;self.plan['revision']=self.revision
-                self.state.update(phase='reviewing',preflight={'renamed':renamed,'duplicates':duplicates,'files':len(active),'bytes':sum(r['size'] for r in active)},current='')
-                self._publish()
-        except InterruptedError:
-            with self.lock:
-                planner.refresh(self.plan);self.state.update(phase='ready',error='已停止检查，没有开始复制')
-        except Exception as exc:
-            with self.lock:
-                planner.refresh(self.plan);self.state.update(phase='ready',error=str(exc))
-
-    def start_copy(self,payload=None):
-        with self.lock:
-            self._check(payload or {},('reviewing',))
-            source,dest=valid_roots(self.source,self.destination)
-            if source!=self.source or dest!=self.destination:raise ValueError('路径已变化，请重新扫描')
-            # Re-check all sources before creating any destination file.
-            for r in self.plan['rows'].values():
-                if not r['excluded'] and (Path(r['source']).resolve()!=Path(r['source']) or fingerprint(Path(r['source']))!=r['fingerprint']):raise ValueError('来源在检查后发生变化，请重新扫描')
-            self.cancel.clear();self.state.update(phase='copying',completed=0,results=[],error='')
-        threading.Thread(target=self._copy,daemon=True).start()
-
-    def _copy(self):
-        report_path=None
-        try:
-            rows=[r for r in self.plan['rows'].values() if not r['excluded']]
-            self.destination.mkdir(parents=True,exist_ok=True)
-            if self.destination.resolve()!=self.destination:raise ValueError('目标路径已改变')
-            if shutil.disk_usage(self.destination).free<sum(r['size'] for r in rows):raise ValueError('目标剩余空间不足')
-            reports=safe_folder(self.destination,Path('.整理记录'))
-            report_path=reports/f'{dt.datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(4)}.jsonl'
-            with report_path.open('x',encoding='utf-8') as log:
-                # Group order keeps associated copies adjacent.
-                for group in self.plan['groups']:
-                    for sid in group['shots']:
-                        if self.cancel.is_set():break
-                        shot=self.plan['shots'][sid]
-                        if shot['excluded']:continue
-                        for rid in shot['rows']:
-                            if self.cancel.is_set():break
-                            row=self.plan['rows'][rid]
-                            try:result=copy_one(row,self.source,self.destination,self.cancel.is_set,exact=True)
-                            except InterruptedError:break
-                            except Exception as exc:result={'status':'失败','error':str(exc)}
-                            result.update(source=row['source'],planned_target=row['target'],group=group['name'])
-                            log.write(json.dumps(result,ensure_ascii=False)+'\n');log.flush()
-                            with self.lock:
-                                self.state['results'].append(result);self.state['completed']+=1;self.state['current']=row['relative']
-            with self.lock:self.state.update(phase='cancelled' if self.cancel.is_set() else 'done',report=str(report_path))
-        except Exception as exc:
-            with self.lock:self.state.update(phase='error',error=str(exc),report=str(report_path) if report_path else '')
 
 
 class LocalServer(ThreadingHTTPServer):
@@ -471,10 +388,27 @@ def make_handler(organizer, token):
                 elif self.path == '/api/copy': organizer.start_copy(payload)
                 elif self.path == '/api/prepare': organizer.prepare(payload)
                 elif self.path == '/api/edit': organizer.edit(payload)
+                elif self.path == '/api/pause': organizer.pause_copy(payload)
+                elif self.path == '/api/continue': organizer.continue_copy(payload)
+                elif self.path == '/api/imports': return self.send(organizer.import_details(payload))
+                elif self.path == '/api/history': return self.send(organizer.history_page(payload))
+                elif self.path == '/api/history_detail': return self.send(organizer.history_detail(payload))
+                elif self.path == '/api/folder': return self.send(organizer.reveal_folder(payload))
+                elif self.path == '/api/open_folder':
+                    folder = organizer.reveal_folder(payload)
+                    if os.name == 'nt': os.startfile(folder['path'])
+                    else: subprocess.run(['/usr/bin/open', folder['path']], check=True)
+                elif self.path == '/api/retry_failed': organizer.retry_failed(payload)
+                elif self.path == '/api/scope': organizer.set_scope(payload)
+                elif self.path == '/api/resume': organizer.resume_task(payload)
+                elif self.path == '/api/duplicates': return self.send(organizer.duplicate_page(payload))
+                elif self.path == '/api/results': return self.send(organizer.result_page(payload))
                 elif self.path == '/api/files': return self.send(organizer.files(payload))
                 elif self.path == '/api/thumbnail': return self.send(organizer.thumbnail(payload))
                 elif self.path == '/api/cancel': organizer.cancel.set()
                 elif self.path == '/api/choose':
+                    if os.name == 'nt':
+                        return self.send({'path': organizer.choose_folder()})
                     result = subprocess.run(['osascript', '-e', 'POSIX path of (choose folder with prompt "选择文件夹")'], capture_output=True, text=True, timeout=120)
                     return self.send({'path': result.stdout.strip() if result.returncode == 0 else ''})
                 else: return self.send({'error': '未找到'}, 404)
@@ -489,7 +423,7 @@ def main():
     parser.add_argument('--port', type=int, default=0)
     args = parser.parse_args()
     token = secrets.token_urlsafe(32)
-    server = LocalServer(('127.0.0.1', args.port), make_handler(Organizer(), token))
+    server = LocalServer(('127.0.0.1', args.port), make_handler(Organizer(data_directory()), token))
     url = f'http://127.0.0.1:{server.server_port}/#{token}'
     print('存储卡整理工具已启动，仅此电脑可访问。\n' + url, flush=True)
     print('保持此窗口开启；结束使用后按 Control+C。', flush=True)

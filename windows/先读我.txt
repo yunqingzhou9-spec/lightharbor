@@ -1,0 +1,36 @@
+拾光 LightHarbor · Windows 1.4.0 预览版
+
+适用 Windows 10/11 64 位 Intel / AMD 电脑；不是 Windows ARM 原生版本。
+本包已包含 Python 和依赖，无需另外安装 Python。请先完整解压到本机文件夹，勿直接在压缩包里启动。
+双击 Start-LightHarbor.cmd。启动后会出现独立的拾光窗口，后台命令窗口请保留，结束时关闭拾光窗口。
+首次启动较慢时请稍候。不要通过关闭后台命令窗口结束复制。
+
+系统组件：需要 Microsoft Edge WebView2 Runtime 及 .NET Framework 4.8（不少 Windows 电脑已有）。
+若提示缺少组件，请从微软官方下载并安装：
+https://developer.microsoft.com/microsoft-edge/webview2/
+https://dotnet.microsoft.com/download/dotnet-framework/net48
+本包不会静默安装系统组件，不要求管理员权限启动拾光。
+
+使用步骤
+1. 选择存储卡来源和独立的归档目标文件夹。
+2. 扫描后默认全部勾选；取消照片或日期文件夹的勾选即可排除本次复制。
+3. 检查复制计划；同名文件只有手动确认后才跳过。
+4. 确认后复制，原件保留，完成后显示明细。文件级续复制和本地任务记录可用。
+记录位于 %LOCALAPPDATA%\LightHarbor\tasks，退出后可以恢复。
+
+Windows 版差异
+• 日期、类型、GPS 网格位置、延时分组、手动归档、文件名查重及复制核验均已适配。
+• 暂不支持 Mac Vision 景物识别，该选项已禁用。
+• JPEG/TIFF 等照片读取 EXIF；支持部分 RAW 的 EXIF 和内嵌 JPEG 预览，具体取决于相机格式。
+• 不支持读取的格式显示提示并使用修改日期，不能保证自动识别延时；不会阻止原文件复制。
+• RAW、HEIC/HEIF 等格式不保证能显示缩略图。不要仅凭预览是否出现判断文件是否完整。
+• 目标名称需遵守 Windows 命名规则；建议归档到较短路径，避免系统长路径限制。
+
+验证范围
+这是 Windows 预览包，不是已签名的正式安装器。已在 Mac 验证共享复制逻辑、元数据读取、打包文件与依赖完整性。
+目前未在 Windows 实机完成独立窗口和文件对话框端到端验证。建议先用少量照片试复制，确认后处理整卡。
+启动失败日志位于 %LOCALAPPDATA%\LightHarbor\startup-error.txt。
+请保留系统安全检查；若系统阻止运行，不要关闭防护。
+
+本地处理，不上传照片。第三方运行时和依赖的许可证保留在 runtime 内对应的 LICENSE、dist-info/licenses 等目录。
+官方来源：Python https://www.python.org/；依赖 https://pypi.org/。

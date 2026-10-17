@@ -112,6 +112,44 @@ class OrganizerTests(unittest.TestCase):
             self.assertEqual(record['sha256'],app.digest(p))
             self.assertTrue(p.exists())
         finally:server.shutdown();server.server_close();thread.join()
+    def test_full_result_totals_independent_of_detail_limit(self):
+        organizer = app.Organizer()
+        for phase, statuses, included in [
+            ('done', ['已复制'] * 1234, 1234),
+            ('done', ['失败'] * 3 + ['重复跳过'] * 231 + ['已复制'] * 1000, 1234),
+            ('cancelled', ['失败'] * 2 + ['重复跳过'] * 8 + ['已复制'] * 1001, 1234),
+            ('cancelled', [], 1234),
+        ]:
+            with self.subTest(phase=phase, count=len(statuses)):
+                organizer.state.update(phase=phase, included=included, results=[{'status': x} for x in statuses])
+                snapshot = organizer.snapshot()
+                self.assertEqual(snapshot['processed'], len(statuses))
+                self.assertEqual(snapshot['remaining'], included-len(statuses))
+                self.assertEqual(snapshot['results_total'], len(statuses))
+                self.assertEqual(len(snapshot['results']), min(1000, len(statuses)))
+                for status in ('已复制', '重复跳过', '失败'):
+                    self.assertEqual(snapshot['result_counts'][status], statuses.count(status))
+                if snapshot['results']:
+                    snapshot['results'][0]['status'] = 'changed'
+                    self.assertNotEqual(organizer.state['results'][-min(1000,len(statuses))]['status'], 'changed')
+        organizer.state = {'phase': 'scanning', 'results': []}
+        self.assertEqual(organizer.snapshot()['processed'], 0)
+        self.assertEqual(sum(organizer.snapshot()['result_counts'].values()), 0)
+
+    def test_all_result_pages_and_stale_requests(self):
+        organizer=app.Organizer()
+        organizer.plan={'id':'p','revision':1}
+        organizer.state.update(phase='done',results=[{'status':'已复制','source':str(i)} for i in range(1234)])
+        received=[]
+        while len(received)<1234:
+            page=organizer.result_page({'plan_id':'p','revision':1,'offset':len(received)})
+            self.assertLessEqual(len(page['results']),200)
+            self.assertEqual(page['total'],1234)
+            received.extend(page['results'])
+        self.assertEqual([r['source'] for r in received],[str(i) for i in range(1234)])
+        for payload in ({'plan_id':'old','revision':1},{'plan_id':'p','revision':2},{'plan_id':'p','revision':1,'offset':-1}):
+            with self.assertRaises(ValueError):organizer.result_page(payload)
+
     def test_unknown_metadata_explicit(self):
         self.fixture('broken.heic',b'not an image')
         row=self.plan({'date':True,'type':True,'location':True,'scene':True})[0]

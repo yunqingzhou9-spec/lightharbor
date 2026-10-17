@@ -1,3 +1,15 @@
+# Windows 便携预览版
+
+[下载 Windows x64 预览版](https://github.com/yunqingzhou9-spec/lightharbor/releases/tag/v1.4.0-windows-preview)
+
+适用于 Windows 10/11 的 Intel / AMD 64 位电脑。完整解压后双击 `Start-LightHarbor.cmd`，无需安装 Python。需要 Microsoft Edge WebView2 Runtime 和 .NET Framework 4.8，详见 [Windows 使用说明](windows/先读我.txt)。
+
+支持日期/类型/GPS 网格归档、延时分组、照片和文件夹勾选复制、XMP 关联、手动确认跳过同名文件及文件级续复制。暂不支持 Mac Vision 景物识别，部分 RAW/HEIC 无法预览或读取拍摄时间。
+
+**此版本尚未完成 Windows 实机端到端验证。** 共享逻辑的 54 项测试及 EXIF/预览测试在 Mac 通过；请先用少量照片试用。此预览发布不替代 Mac 正式版。
+
+---
+
 # 拾光 · LightHarbor
 
 **让底片，回到各自的位置。**

@@ -1,4 +1,4 @@
-拾光 LightHarbor · Windows 1.4.0 预览版
+拾光 LightHarbor · Windows 1.4.1 预览版
 
 适用 Windows 10/11 64 位 Intel / AMD 电脑；不是 Windows ARM 原生版本。
 本包已包含 Python 和依赖，无需另外安装 Python。请先完整解压到本机文件夹，勿直接在压缩包里启动。
@@ -34,3 +34,5 @@ Windows 版差异
 
 本地处理，不上传照片。第三方运行时和依赖的许可证保留在 runtime 内对应的 LICENSE、dist-info/licenses 等目录。
 官方来源：Python https://www.python.org/；依赖 https://pypi.org/。
+
+新增清理存储卡：扫描后按日期选择，完整核对独立磁盘卷中的备份，预览清单后输入确认文字才永久删除。RAW/JPEG/XMP 关联文件须全部备份。操作不可撤销，不经过废纸篓。清理日志在本机 tasks 旁的 cleanup-logs 中。Windows 原生流程尚未实机验证。

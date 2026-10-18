@@ -10,9 +10,10 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import struct
 import tempfile
 
-VERSION = '1.0.0'
+VERSION = '1.3.4'
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -24,7 +25,7 @@ def build(destination):
     # Source allowlist deliberately excludes plans, private .ai records and test media.
     scratch = Path(tempfile.mkdtemp(prefix='lightharbor-build-', dir='/private/tmp'))
     source = scratch / 'source'; source.mkdir()
-    for name in ('app.py', 'planner.py', 'mac_entry.py', 'index.html', 'MediaProbe.swift'):
+    for name in ('app.py', 'planner.py', 'copy_workflow.py', 'organizer_insights.py', 'card_cleanup.py', 'mac_entry.py', 'index.html', 'MediaProbe.swift'):
         shutil.copy2(ROOT / name, source / name)
     env = os.environ.copy()
     cache = Path(env.get('LIGHTHARBOR_MODULE_CACHE', str(scratch / 'module-cache')))
@@ -47,8 +48,14 @@ def build(destination):
         for scale in (1, 2):
             name = f'icon_{size}x{size}' + ('@2x' if scale == 2 else '') + '.png'
             run('sips', '-z', size * scale, size * scale, scratch / 'icon.png', '--out', iconset / name, stdout=subprocess.DEVNULL)
-    run('iconutil', '-c', 'icns', iconset, '-o', resources / 'LightHarbor.icns')
-    info = {'CFBundleName': '拾光', 'CFBundleDisplayName': '拾光 · LightHarbor', 'CFBundleExecutable': 'LightHarbor', 'CFBundleIdentifier': 'io.github.yunqingzhou9-spec.lightharbor', 'CFBundleVersion': '1', 'CFBundleShortVersionString': VERSION, 'CFBundlePackageType': 'APPL', 'CFBundleIconFile': 'LightHarbor', 'LSMinimumSystemVersion': '13.0', 'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication', 'NSRemovableVolumesUsageDescription': '读取你选择的存储卡照片，并复制到你选择的归档目录。', 'NSDocumentsFolderUsageDescription': '读取或保存你选择的照片归档。', 'NSDownloadsFolderUsageDescription': '读取你选择的下载文件夹中的照片。', 'NSDesktopFolderUsageDescription': '读取或保存你选择的桌面照片归档。'}
+    # ICNS PNG representations, built without GUI-dependent iconutil.
+    chunks = []
+    for kind, name in [('icp4', 'icon_16x16.png'), ('icp5', 'icon_32x32.png'), ('icp6', 'icon_32x32@2x.png'), ('ic07', 'icon_128x128.png'), ('ic08', 'icon_256x256.png'), ('ic09', 'icon_512x512.png'), ('ic10', 'icon_512x512@2x.png')]:
+        data = (iconset / name).read_bytes()
+        chunks.append(kind.encode('ascii') + struct.pack('>I', len(data) + 8) + data)
+    data = b''.join(chunks)
+    (resources / 'LightHarbor.icns').write_bytes(b'icns' + struct.pack('>I', len(data) + 8) + data)
+    info = {'CFBundleName': '拾光', 'CFBundleDisplayName': '拾光 · LightHarbor', 'CFBundleExecutable': 'LightHarbor', 'CFBundleIdentifier': 'io.github.yunqingzhou9-spec.lightharbor', 'CFBundleVersion': '9', 'CFBundleShortVersionString': VERSION, 'CFBundlePackageType': 'APPL', 'CFBundleIconFile': 'LightHarbor', 'LSMinimumSystemVersion': '13.0', 'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True}, 'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication', 'NSRemovableVolumesUsageDescription': '读取你选择的存储卡照片，并复制到你选择的归档目录。', 'NSDocumentsFolderUsageDescription': '读取或保存你选择的照片归档。', 'NSDownloadsFolderUsageDescription': '读取你选择的下载文件夹中的照片。', 'NSDesktopFolderUsageDescription': '读取或保存你选择的桌面照片归档。'}
     (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
     licenses = resources / 'ThirdPartyLicenses'; licenses.mkdir()
     python_license = Path(sys.base_prefix) / 'lib/python3.14/LICENSE.txt'
@@ -65,15 +72,15 @@ def build(destination):
             if path.is_file(): shutil.copy2(path, licenses / f'{package}-{i}-{path.name}')
     (licenses / 'NOTICE.txt').write_text('Runtime: Python Software Foundation Python 3.14.7. Packaged with PyInstaller 6.22.3 under its bootloader distribution exception. Native system frameworks are supplied by macOS. No photo data or previous user settings are included.\n', encoding='utf-8')
     shutil.copy2(ROOT / 'macos/使用说明.txt', stage / '先读我.txt')
-    os.symlink('/Applications', stage / 'Applications')
     run('codesign', '--force', '--deep', '--sign', '-', '--timestamp=none', application)
     run('codesign', '--verify', '--deep', '--strict', '--verbose=2', application)
     destination.mkdir(parents=True, exist_ok=True)
-    dmg = destination / f'拾光-{VERSION}-macOS-universal.dmg'
-    run('hdiutil', 'create', '-volname', f'LightHarbor {VERSION}', '-srcfolder', stage, '-format', 'UDZO', '-ov', dmg)
-    digest = hashlib.sha256(dmg.read_bytes()).hexdigest()
-    (destination / 'SHA256SUMS.txt').write_text(f'{digest}  {dmg.name}\n', encoding='utf-8')
-    print(json.dumps({'dmg': str(dmg), 'application': str(application), 'scratch': str(scratch), 'sha256': digest}, ensure_ascii=False))
+    archive = destination / f'LightHarbor-{VERSION}-macOS-universal.zip'
+    run('/usr/bin/ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', stage, archive)
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    (destination / f'SHA256SUMS-{VERSION}.txt').write_text(f'{digest}  {archive.name}\n', encoding='utf-8')
+    print(json.dumps({'archive': str(archive), 'application': str(application), 'scratch': str(scratch), 'sha256': digest}, ensure_ascii=False))
+
 
 
 if __name__ == '__main__':

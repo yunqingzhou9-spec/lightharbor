@@ -1,4 +1,4 @@
-"""Private stdio lifecycle protocol for the macOS launcher; no saved user state."""
+"""Private stdio lifecycle protocol for the macOS launcher; durable user-confirmed copy plans."""
 import json
 import secrets
 import signal
@@ -9,7 +9,7 @@ import app
 
 
 def run():
-    organizer = app.Organizer()
+    organizer = app.Organizer(app.data_directory())
     stopping = threading.Event()
     output_lock = threading.Lock()
     token = secrets.token_urlsafe(32)
@@ -48,7 +48,7 @@ def run():
         while True:
             with organizer.lock:
                 phase = organizer.state['phase']
-            if phase not in ('scanning', 'preparing', 'copying'):
+            if phase not in ('scanning', 'preparing', 'copying', 'paused'):
                 break
             organizer.cancel.set()
             time.sleep(.1)

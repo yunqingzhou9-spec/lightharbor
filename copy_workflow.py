@@ -10,6 +10,7 @@ import shutil
 import threading
 import time
 from organizer_insights import OrganizerInsights
+from card_cleanup import CardCleanup
 import unicodedata
 
 
@@ -48,7 +49,7 @@ def mount_guard(path):
             raise ValueError('外置磁盘未连接：' + str(volume) + '。请接回原磁盘后重试。')
 
 
-class CopyWorkflow(OrganizerInsights):
+class CopyWorkflow(CardCleanup, OrganizerInsights):
     def init_workflow(self, store):
         self.init_insights()
         self.hash_cache={}

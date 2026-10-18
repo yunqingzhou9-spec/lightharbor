@@ -15,7 +15,7 @@ def main():
     organizer=app.Organizer(app.data_directory())
     token=secrets.token_urlsafe(32)
     server=app.LocalServer(('127.0.0.1',0),app.make_handler(organizer,token))
-    window=webview.create_window('拾光 · LightHarbor Windows 1.4.0 Preview',
+    window=webview.create_window('拾光 · LightHarbor Windows 1.4.1 Preview',
         f'http://127.0.0.1:{server.server_port}/#{token}',width=1280,height=860,min_size=(860,600))
     closing=threading.Event(); safe_to_close=threading.Event()
     def choose():

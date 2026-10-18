@@ -9,7 +9,7 @@ import zipfile
 
 ROOT=Path(__file__).resolve().parents[1]
 WORK=Path.cwd()/'work/windows-package'
-STAGE=WORK/'LightHarbor-Windows-1.4.1-preview'
+STAGE=WORK/'LightHarbor-Windows-1.4.2-preview'
 if STAGE.exists():raise SystemExit('Staging directory already exists; choose a fresh directory')
 STAGE.mkdir(parents=True)
 runtime=STAGE/'runtime';runtime.mkdir()
@@ -30,14 +30,21 @@ application=STAGE/'app';application.mkdir()
 for name in ('app.py','planner.py','copy_workflow.py','organizer_insights.py', 'card_cleanup.py','windows_media.py','windows_entry.py','index.html'):
     shutil.copy2(ROOT/name,application/name)
 html=(application/'index.html').read_text()
+if '版本 1.3.13' not in html:raise ValueError('Unexpected shared UI version')
+html=html.replace('版本 1.3.13','版本 1.4.2 预览版')
+old_basename="const lhBasename=value=>(value||'').replace(/\\/+$/,'').split('/').pop()||'';"
+new_basename="const lhBasename=value=>(value||'').replaceAll('\\\\','/').replace(/\\/+$/,'').split('/').pop()||'';"
+if old_basename not in html:raise ValueError('Unexpected Photos basename function')
+html=html.replace(old_basename,new_basename)
 html=html.replace('景物 · 离线识别画面','景物识别 · Windows 版暂不支持').replace('在访达中打开','在文件资源管理器中打开')
 html=html.replace("(state.destination||'').split('/')", "(state.destination||'').replaceAll('\\\\','/').split('/')")
 html=html.replace('</script>',"\nconst winRender=render;render=function(force=false){winRender(force);$('scene').checked=false;$('scene').disabled=true;};\n</script>")
 (application/'index.html').write_text(html,encoding='utf-8')
 (STAGE/'Start-LightHarbor.cmd').write_bytes(b'@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\n"%~dp0runtime\\python.exe" "%~dp0app\\windows_entry.py"\r\nif errorlevel 1 pause\r\n')
 shutil.copy2(ROOT/'windows/先读我.txt',STAGE/'先读我.txt')
+shutil.copytree(ROOT/'windows/thirdparty',STAGE/'ThirdPartyLicenses')
 (STAGE/'DEPENDENCIES.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
-archive=ROOT/'release/LightHarbor-1.4.1-preview-Windows-x64.zip'
+archive=ROOT/'release/LightHarbor-1.4.2-preview-Windows-x64.zip'
 with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
     for f in sorted(STAGE.rglob('*')):
         if f.is_file():z.write(f,Path(STAGE.name)/f.relative_to(STAGE))

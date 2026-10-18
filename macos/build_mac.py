@@ -13,7 +13,7 @@ import sys
 import struct
 import tempfile
 
-VERSION = '1.3.4'
+VERSION = '1.3.13'
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -55,7 +55,7 @@ def build(destination):
         chunks.append(kind.encode('ascii') + struct.pack('>I', len(data) + 8) + data)
     data = b''.join(chunks)
     (resources / 'LightHarbor.icns').write_bytes(b'icns' + struct.pack('>I', len(data) + 8) + data)
-    info = {'CFBundleName': '拾光', 'CFBundleDisplayName': '拾光 · LightHarbor', 'CFBundleExecutable': 'LightHarbor', 'CFBundleIdentifier': 'io.github.yunqingzhou9-spec.lightharbor', 'CFBundleVersion': '9', 'CFBundleShortVersionString': VERSION, 'CFBundlePackageType': 'APPL', 'CFBundleIconFile': 'LightHarbor', 'LSMinimumSystemVersion': '13.0', 'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True}, 'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication', 'NSRemovableVolumesUsageDescription': '读取你选择的存储卡照片，并复制到你选择的归档目录。', 'NSDocumentsFolderUsageDescription': '读取或保存你选择的照片归档。', 'NSDownloadsFolderUsageDescription': '读取你选择的下载文件夹中的照片。', 'NSDesktopFolderUsageDescription': '读取或保存你选择的桌面照片归档。'}
+    info = {'CFBundleName': '拾光', 'CFBundleDisplayName': '拾光 · LightHarbor', 'CFBundleExecutable': 'LightHarbor', 'CFBundleIdentifier': 'io.github.yunqingzhou9-spec.lightharbor', 'CFBundleVersion': '12', 'CFBundleShortVersionString': VERSION, 'CFBundlePackageType': 'APPL', 'CFBundleIconFile': 'LightHarbor', 'LSMinimumSystemVersion': '13.0', 'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True}, 'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication', 'NSRemovableVolumesUsageDescription': '读取你选择的存储卡照片，并复制到你选择的归档目录。', 'NSDocumentsFolderUsageDescription': '读取或保存你选择的照片归档。', 'NSDownloadsFolderUsageDescription': '读取你选择的下载文件夹中的照片。', 'NSDesktopFolderUsageDescription': '读取或保存你选择的桌面照片归档。'}
     (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
     licenses = resources / 'ThirdPartyLicenses'; licenses.mkdir()
     python_license = Path(sys.base_prefix) / 'lib/python3.14/LICENSE.txt'

@@ -9,7 +9,7 @@ python3 -m pip install pyinstaller==6.22.3 altgraph==0.17.5 macholib==1.16.4 pac
 python3 macos/build_mac.py
 ```
 
-The script compiles the launcher and ImageIO/Vision helper for arm64 and x86_64 with a macOS 13 deployment target, packages Python, generates a local vector-based icon, signs the bundle ad hoc, then creates a ZIP and SHA-256 checksum. No browser is launched. Source staging uses an explicit five-file allowlist. Build records, `.ai`, repository metadata, tests and photos are never part of the runtime package.
+The script compiles the launcher and ImageIO/Vision helper for arm64 and x86_64 with a macOS 13 deployment target, packages Python, generates a local vector-based icon, signs the bundle ad hoc, then creates a ZIP and SHA-256 checksum. No browser is launched. Source staging uses an explicit explicit allowlist. Build records, `.ai`, repository metadata, tests and photos are never part of the runtime package.
 
 A universal2 build validates binary slices, but this is not a claim of native testing on every Intel Mac/macOS version. Test each release from an extracted/relocated app without developer environment variables, including EXIF/thumbnail handling and a fixture-only copy with hash comparison. The launcher uses private stdin to request safe shutdown, waits for active work to stop, and blocks exit until the child service has ended. Unexpected launcher death closes stdin and requests the same cleanup.
 

@@ -197,6 +197,7 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
         import planner
         with self.lock:
             self._check(payload)
+            if self.plan['options'].get('cleanup_only'):raise ValueError('这是清理扫描，请选择目标目录并重新扫描后复制')
             if not self.active_rows(): raise ValueError('没有选中要复制的文件')
             planner.refresh(self.plan)
             self.cancel.clear(); self.state.update(phase='preparing', current='核对来源与已有副本', error='', preflight=None)
@@ -320,6 +321,7 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
         with self.lock:
             payload = payload or {}
             self._check(payload, ('reviewing',))
+            if self.plan['options'].get('cleanup_only'):raise ValueError('清理扫描不能用于复制')
             policy = payload.get('duplicate_policy')
             if self.state['preflight']['duplicates'] and policy not in ('skip', 'again'):
                 raise ValueError('发现已有副本，请手动选择“跳过匹配文件”或“全部再复制一份”')

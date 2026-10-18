@@ -114,7 +114,11 @@ class Probe:
 
 
 def scan(source, destination, options, progress=lambda *_: None, cancelled=lambda: False):
-    source, destination = valid_roots(source, destination)
+    if options.get('cleanup_only'):
+        from card_cleanup import source_card_guard
+        source, destination = source_card_guard(source), Path(destination).expanduser().resolve()
+    else:
+        source, destination = valid_roots(source, destination)
     rows, warnings = [], []
     probe = Probe()
     try:
@@ -274,8 +278,12 @@ class Organizer(CopyWorkflow):
         with self.lock:
             if self.state['phase'] in ('scanning','preparing','copying','paused'): raise ValueError('请等待当前任务完成')
             if not payload.get('source') or not payload.get('destination'):raise ValueError('请填写来源和目标路径')
-            source,dest=valid_roots(payload['source'],payload['destination'])
             options=payload.get('options',{})
+            if options.get('cleanup_only'):
+                from card_cleanup import source_card_guard
+                source,dest=source_card_guard(payload['source']),Path(payload['destination']).expanduser().resolve()
+            else:
+                source,dest=valid_roots(payload['source'],payload['destination'])
             if options.get('duplicate_mode','name') not in ('name','content'):raise ValueError('查重方式无效')
             minimum=int(options.get('min_frames',30));tolerance=float(options.get('tolerance',20))
             if not 3<=minimum<=100000 or not 5<=tolerance<=60:raise ValueError('连续张数 3–100000，间隔容差 5–60%')
@@ -292,7 +300,7 @@ class Organizer(CopyWorkflow):
             plan=planner.build_plan(rows,options)
             with self.lock:
                 self.rows=rows;self.plan=plan;self.revision=1
-            self.assess_imports()
+            if not options.get("cleanup_only"):self.assess_imports()
             with self.lock:
                 self.state.update(phase='cancelled' if self.cancel.is_set() else 'ready',warnings=warnings,metadata_warnings=sum(bool(r['warning']) for r in rows),fallback_dates=sum(not r['reliable_time'] for r in rows))
                 self._publish(); self.save_task()
@@ -325,6 +333,32 @@ class Organizer(CopyWorkflow):
         with self.lock:
             self._check(payload,('ready','reviewing','done','copying','paused','cancelled'))
             return planner.page(self.plan,payload.get('group'),int(payload.get('page',0)))
+
+    def preferences(self,payload):
+        if not self.store:return {}
+        path=self.store.parent/'organizer-preferences.json'
+        with self.lock:
+            if 'values' in payload:
+                values=payload['values'];clean={}
+                if not isinstance(values,dict):raise ValueError('设置无效')
+                for key in ('detect','location','scene','date','type'):
+                    if key in values:
+                        if type(values[key]) is not bool:raise ValueError('设置无效')
+                        clean[key]=values[key]
+                for key,allowed in [('mode',('groups','legacy')),('duplicate_mode',('name','content'))]:
+                    if key in values:
+                        if values[key] not in allowed:raise ValueError('设置无效')
+                        clean[key]=values[key]
+                for key,low,high in [('min_frames',3,100000),('tolerance',5,60)]:
+                    if key in values:
+                        value=float(values[key])
+                        if not low<=value<=high:raise ValueError('设置超出有效范围')
+                        clean[key]=int(value) if key=='min_frames' else value
+                path.parent.mkdir(parents=True,exist_ok=True)
+                temporary=path.with_suffix('.tmp');temporary.write_text(json.dumps(clean),encoding='utf-8');temporary.replace(path)
+                return clean
+            try:return json.loads(path.read_text(encoding='utf-8'))
+            except (OSError,ValueError):return {}
 
     def thumbnail(self,payload):
         with self.lock:
@@ -385,6 +419,7 @@ def make_handler(organizer, token):
                 if not 0 <= length <= 2000000: raise ValueError('请求过大')
                 payload = json.loads(self.rfile.read(length) or b'{}')
                 if self.path == '/api/scan': organizer.start_scan(payload)
+                elif self.path == '/api/cleanup_scan': organizer.cleanup_scan(payload)
                 elif self.path == '/api/cleanup_dates': return self.send(organizer.cleanup_dates(payload))
                 elif self.path == '/api/cleanup_check': organizer.cleanup_check(payload)
                 elif self.path == '/api/cleanup_page': return self.send(organizer.cleanup_page(payload))
@@ -408,6 +443,7 @@ def make_handler(organizer, token):
                 elif self.path == '/api/duplicates': return self.send(organizer.duplicate_page(payload))
                 elif self.path == '/api/results': return self.send(organizer.result_page(payload))
                 elif self.path == '/api/files': return self.send(organizer.files(payload))
+                elif self.path == '/api/preferences': return self.send(organizer.preferences(payload))
                 elif self.path == '/api/thumbnail': return self.send(organizer.thumbnail(payload))
                 elif self.path == '/api/cancel': organizer.cancel.set()
                 elif self.path == '/api/choose':

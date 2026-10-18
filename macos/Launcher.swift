@@ -149,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         }
     }
     @objc func about() {
-        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "拾光 · LightHarbor", .applicationVersion: "1.3.4", .credits: NSAttributedString(string: "本地照片与延时摄影整理工具\nhttps://github.com/yunqingzhou9-spec/lightharbor")])
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "拾光 · LightHarbor", .applicationVersion: "1.3.13", .credits: NSAttributedString(string: "本地照片与延时摄影整理工具\nhttps://github.com/yunqingzhou9-spec/lightharbor")])
     }
     func fail(_ message: String) { statusLabel.stringValue = message }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { window.makeKeyAndOrderFront(nil); return true }

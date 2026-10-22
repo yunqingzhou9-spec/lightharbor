@@ -8,19 +8,34 @@ import threading
 import time
 import traceback
 import app
+from version import DISPLAY_VERSION
+from windows_folder_picker import choose_folder
 
 
 def main():
     import webview
     organizer=app.Organizer(app.data_directory())
+    original_thumbnail=organizer.thumbnail
+    def thumbnail(payload):
+        result=original_thumbnail(payload)
+        if result.get('source')=='RAW 解码预览':
+            result['preview_source']='RAW 解码预览'
+        return result
+    organizer.thumbnail=thumbnail
     token=secrets.token_urlsafe(32)
     server=app.LocalServer(('127.0.0.1',0),app.make_handler(organizer,token))
-    window=webview.create_window('拾光 · LightHarbor Windows 1.4.2 Preview',
+    window=webview.create_window('拾光 · LightHarbor Windows '+DISPLAY_VERSION,
         f'http://127.0.0.1:{server.server_port}/#{token}',width=1280,height=860,min_size=(860,600))
     closing=threading.Event(); safe_to_close=threading.Event()
-    def choose():
-        chosen=window.create_file_dialog(webview.FileDialog.FOLDER)
-        return chosen[0] if chosen else ''
+    picker_lock=threading.Lock()
+    last_folder=[None]
+    def choose(multiple=False):
+        if not picker_lock.acquire(blocking=False):return ''
+        try:
+            chosen=choose_folder(last_folder[0],closing,multiple=multiple)
+            if chosen:last_folder[0]=chosen[0] if isinstance(chosen,list) else chosen
+            return chosen
+        finally:picker_lock.release()
     organizer.choose_folder=choose
     def shutdown():
         organizer.cancel.set()

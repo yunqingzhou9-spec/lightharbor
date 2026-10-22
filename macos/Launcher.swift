@@ -132,11 +132,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         guard !quitting, message.frameInfo.isMainFrame, isLocal(message.frameInfo.request.url), let body = message.body as? [String: Any] else { replyHandler(nil, "请求不可用"); return }
         switch body["action"] as? String {
         case "choose":
-            let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+            let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = body["multiple"] as? Bool == true && body["target"] as? String == "source"
             panel.canCreateDirectories = body["target"] as? String == "destination"
             panel.message = panel.canCreateDirectories ? "选择整理后的保存文件夹" : "选择存储卡或照片文件夹"
             panel.prompt = "选择文件夹"
-            panel.beginSheetModal(for: window) { response in replyHandler(["path": response == .OK ? (panel.url?.path ?? "") : ""], nil) }
+            panel.beginSheetModal(for: window) { response in replyHandler(["path": response == .OK ? (panel.url?.path ?? "") : "", "paths": response == .OK ? panel.urls.map { $0.path } : []], nil) }
         case "reveal":
             guard let path = body["path"] as? String, path.hasPrefix("/"), !path.contains("\u{0}"), FileManager.default.fileExists(atPath: path) else { replyHandler(nil, "文件夹不存在或磁盘未连接"); return }
             let opened = NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
@@ -149,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         }
     }
     @objc func about() {
-        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "拾光 · LightHarbor", .applicationVersion: "1.3.13", .credits: NSAttributedString(string: "本地照片与延时摄影整理工具\nhttps://github.com/yunqingzhou9-spec/lightharbor")])
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "拾光 · LightHarbor", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发预览", .credits: NSAttributedString(string: "本地照片与延时摄影整理工具\nhttps://github.com/yunqingzhou9-spec/lightharbor")])
     }
     func fail(_ message: String) { statusLabel.stringValue = message }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { window.makeKeyAndOrderFront(nil); return true }

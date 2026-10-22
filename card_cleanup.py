@@ -40,7 +40,7 @@ class CardCleanup:
         if not self.store:raise ValueError('无法保存清理日志')
         # An internal non-existent planning root only; copy endpoints reject this plan.
         self.start_scan({'source':str(source),'destination':str(self.store.parent/'cleanup-plan-only'),
-                         'options':{'cleanup_only':True,'detect':False,'scene':False,'location':False}})
+                         'options':{'cleanup_only':True,'detect':True,'scene':False,'location':False}})
 
     def cleanup_dates(self, payload):
         with self.lock:
@@ -57,7 +57,7 @@ class CardCleanup:
                 if not shot['photo']:continue
                 rows=[self.plan['rows'][i] for i in shot['rows']]
                 preview=next((i for i in shot['rows'] if self.plan['rows'][i].get('format')=='JPEG'),next((i for i in shot['rows'] if self.plan['rows'][i]['kind'] in ('照片','RAW原片')),None))
-                shots.append({'id':shot['id'],'date':shot['date'],'preview':preview,'name':rows[0]['relative'],'count':len(rows),'bytes':sum(r['size'] for r in rows),'files':[r['relative'] for r in rows]})
+                shots.append({'id':shot['id'],'date':shot['date'],'preview':preview,'name':rows[0]['relative'],'count':len(rows),'bytes':sum(r['size'] for r in rows),'files':[r['relative'] for r in rows],'kind':next((g['kind'] for g in self.plan['groups'] if shot['id'] in g['shots']),'ordinary')})
             return {'source':str(self.source),'destination':str(self.destination),'dates':sorted(dates.values(),key=lambda x:x['date']),'shots':shots}
 
     def cleanup_check(self,payload):

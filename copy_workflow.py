@@ -50,6 +50,101 @@ def mount_guard(path):
 
 
 class CopyWorkflow(CardCleanup, OrganizerInsights):
+    def copy_roots(self):
+        return [Path(p) for p in self.plan.get('sources',[])] or [self.source]
+
+    def validate_copy_roots(self):
+        from app import valid_sources
+        roots=self.copy_roots()
+        for root in roots: mount_guard(root)
+        mount_guard(self.destination)
+        checked,dest=valid_sources([str(r) for r in roots],str(self.destination))
+        if checked!=roots or dest!=self.destination: raise ValueError('来源或目标路径已改变，请重新扫描')
+        return roots[0],dest
+
+    def apply_archive_layout(self, persist=False):
+        """Read/write only the selected archive's own small layout record."""
+        import planner
+        if self.plan['options'].get('layout_version')!=2:return
+        targets={rid:row['target'] for rid,row in self.plan['rows'].items()}
+        path=self.destination/'.整理记录'/'layout-v1.json'
+        if path.parent.is_symlink() or path.is_symlink() or path.resolve()!=path:
+            raise ValueError('归档布局记录路径异常，请核对目标目录')
+        data={'schema':1,'dates':{},'sequences':{},'members':{}}
+        if path.exists():
+            data=json.loads(path.read_text())
+            if data.get('schema')!=1 or not all(isinstance(data.get(k),dict) for k in ('dates','sequences','members')):raise ValueError('归档布局记录无效，请核对后重试')
+        for date,routes in data['dates'].items():
+            if not re.fullmatch(r'\d{4}-\d{2}-\d{2}',date) or not isinstance(routes,dict):raise ValueError('归档日期记录无效')
+            for cat,value in routes.items():
+                planner.folder_name(cat)
+                allowed={str(Path(date[:4],date)),str(Path(date[:4],date,cat))}
+                if value not in allowed:raise ValueError('归档路径记录无效')
+        for key,name in data['sequences'].items():
+            if not re.fullmatch('[a-f0-9]{64}',key):raise ValueError('序列记录无效')
+            planner.folder_name(name)
+        # Previously copied members supply stable sequence identity even if a
+        # later scan contains only a subset or added exposures.
+        groups=[]
+        for group in self.plan['groups']:
+            if not group.get('sequence_key'):
+                groups.append(group);continue
+            known_group={data['members'][planner.sequence_member(self.plan['rows'][rid])]
+                for sid in group['shots'] for rid in self.plan['shots'][sid]['rows']
+                if planner.sequence_member(self.plan['rows'][rid]) in data['members']}
+            fallback=next(iter(known_group)) if len(known_group)==1 else group['sequence_key']
+            buckets={}
+            for sid in group['shots']:
+                shot=self.plan['shots'][sid]
+                members=[planner.sequence_member(self.plan['rows'][rid]) for rid in shot['rows']]
+                known={data['members'][p] for p in members if p in data['members']}
+                if len(known)>1:raise ValueError('序列归属冲突，请重新核对来源')
+                key=next(iter(known),fallback)
+                if not isinstance(key,str) or not re.fullmatch('[a-f0-9]{64}',key):raise ValueError('序列身份记录无效')
+                buckets.setdefault(key,[]).append(sid)
+            for key,ids in buckets.items():
+                part=copy.deepcopy(group);part.update(id=group['id'] if len(buckets)==1 else secrets.token_hex(8),shots=ids,sequence_key=key)
+                if key in data['sequences']:part.update(name=data['sequences'][key],auto_name=False)
+                groups.append(part)
+        self.plan['groups']=groups
+        categories={}
+        for group in groups:
+            for sid in group['shots']:categories.setdefault(self.plan['shots'][sid]['date'],set()).add(planner.category(self.plan,group))
+        for date,cats in categories.items():
+            existing=data['dates'].get(date)
+            if existing is None:
+                existing={};data['dates'][date]=existing
+                omit=len(cats)==1 and next(iter(cats)) in ('普通照片','延时摄影','视频')
+            else:omit=False
+            for cat in cats:existing.setdefault(cat,str(Path(date[:4],date) if omit else Path(date[:4],date,cat)))
+        self.plan['archive_routes']=data['dates'];self.plan['sequence_routes']=data['sequences']
+        planner.refresh(self.plan)
+        if persist:
+            from app import safe_folder
+            safe_folder(self.destination,Path('.整理记录'))
+            for group in groups:
+                key=group.get('sequence_key')
+                if key:
+                    # Derive exactly the folder the current preview displayed.
+                    data['sequences'][key]=Path(group['folder']).name
+                    for sid in group['shots']:
+                        for rid in self.plan['shots'][sid]['rows']:data['members'][planner.sequence_member(self.plan['rows'][rid])]=key
+            atomic_json(path,data)
+            # Preflight already reserved non-overwriting names. Persisting the
+            # routing metadata must never rewrite those confirmed targets.
+            for rid,target in targets.items():self.plan['rows'][rid]['target']=target
+
+    def next_batch(self,payload):
+        with self.lock:
+            self._check(payload,('done','cancelled','error'))
+            if self.plan['options'].get('cleanup_only'):raise ValueError('清理任务不能继续复制')
+            self.save_execution()
+            self.plan['scope']={'mode':'photos','shots':[]}
+            self.revision+=1;self.plan['revision']=self.revision
+            self.cancel.clear();self.init_insights()
+            self.state.update(phase='ready',results=[],preflight=None,error='',report='',execution_id='',completed=0,current='',batch_notice='上一批结果已保留，请选择下一批照片。')
+            self._publish();self.save_task()
+
     def init_workflow(self, store):
         self.init_insights()
         self.hash_cache={}
@@ -72,10 +167,10 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
             except (OSError, ValueError, KeyError, TypeError): continue
         self.saved_tasks.sort(key=lambda x: x['updated'], reverse=True)
 
-    def save_task(self):
+    def save_task(self, phase=None):
         if not self.store or not self.plan: return
-        value = {'schema': 1, 'plan': self.plan, 'source': str(self.source),
-            'destination': str(self.destination), 'phase': self.state['phase'],
+        value = {'schema': 2, 'plan': self.plan, 'source': str(self.source), 'sources':[str(r) for r in self.copy_roots()],
+            'destination': str(self.destination), 'phase': phase or self.state['phase'],
             'files': len(self.active_rows()), 'updated': dt.datetime.now().isoformat(timespec='seconds')}
         atomic_json(self.store / (self.plan['id'] + '.json'), value)
         self._load_task_list()
@@ -88,20 +183,42 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
 
     def active_rows(self):
         shots = self.active_shots()
-        return [self.plan['rows'][rid] for sid, s in self.plan['shots'].items()
-                if sid in shots for rid in s['rows']]
+        rows = [self.plan['rows'][rid] for sid, s in self.plan['shots'].items() if sid in shots for rid in s['rows']]
+        mode=self.plan.get('copy_format','both')
+        if mode not in ('both','raw','jpg'):raise ValueError('复制格式无效')
+        if mode=='both':return rows
+        # Restrict photo shots, while independent videos/other files retain their rule.
+        def allowed(row):
+            shot=self.plan['shots'][row['shot']]
+            if not shot['photo']:return True
+            ext=Path(row['source']).suffix.lower()
+            if mode=='raw':
+                return row['kind']=='RAW原片' or (ext=='.xmp' and row.get('format')=='RAW' and any(self.plan['rows'][rid]['kind']=='RAW原片' for rid in shot['rows']))
+            has_jpeg=any(self.plan['rows'][rid]['kind']=='照片' and Path(self.plan['rows'][rid]['source']).suffix.lower() in ('.jpg','.jpeg') for rid in shot['rows'])
+            return has_jpeg and ((row['kind']=='照片' and ext in ('.jpg','.jpeg')) or (ext in ('.xmp','.aae') and row.get('format')=='JPEG'))
+        return [r for r in rows if allowed(r)]
 
     def set_scope(self, payload):
         import planner
         with self.lock:
             self._check(payload, phases=('ready', 'reviewing', 'done'))
             mode = payload.get('mode')
-            if mode == 'all': scope = {'mode': 'all', 'shots': []}
+            if mode == 'format':
+                if self.plan['options'].get('cleanup_only'):raise ValueError('清理扫描不能调整复制格式')
+                if payload.get('value') not in ('both','raw','jpg'):raise ValueError('复制格式无效')
+                self.plan['copy_format']=payload['value']
+                scope=self.plan.get('scope',{'mode':'all','shots':[]})
+            elif mode == 'all': scope = {'mode': 'all', 'shots': []}
             elif mode == 'toggle_shots':
                 matches=set(payload.get('shots',[]))
+                if 'filter' in payload:matches.update(planner.matching_photo_ids(self.plan,payload['filter']))
+                if payload.get('date') is not None:
+                    date=payload['date']
+                    if not isinstance(date,str) or date not in {s['date'] for s in self.plan['shots'].values() if s['photo']}:raise ValueError('拍摄日期无效')
+                    matches.update(sid for sid,s in self.plan['shots'].items() if s['photo'] and s['date']==date)
                 if payload.get('all_group'):
                     matches.update(next((g['shots'] for g in self.plan['groups'] if g['id']==payload.get('group')),[]))
-                if not matches or not matches.issubset(self.plan['shots']) or not isinstance(payload.get('checked'),bool):
+                if (not matches and 'filter' not in payload) or not matches.issubset(self.plan['shots']) or not isinstance(payload.get('checked'),bool):
                     raise ValueError('照片选择无效')
                 shots=self.active_shots()
                 if payload['checked']: shots.update(matches)
@@ -138,7 +255,8 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
                     raise ValueError('所选内容均已排除，请先恢复整理')
             else: raise ValueError('复制范围无效')
             if mode in ('all','toggle_shots','toggle_folder'):
-                for shot in self.plan['shots'].values(): shot['excluded']=False
+                for sid,shot in self.plan['shots'].items():
+                    if mode!='toggle_shots' or 'filter' not in payload or sid in matches:shot['excluded']=False
             self.plan['scope'] = scope
             self.revision += 1; self.plan['revision'] = self.revision
             planner.refresh(self.plan)
@@ -155,10 +273,14 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
             path = self.store / (task['id'] + '.json')
             if path.is_symlink(): raise ValueError('任务记录路径异常')
             saved = json.loads(path.read_text())
-            mount_guard(saved['source']); mount_guard(saved['destination'])
-            src, dest = valid_roots(saved['source'], saved['destination'])
+            from app import valid_sources, row_source_root
+            saved_sources=saved.get('sources') or [saved['source']]
+            for root in saved_sources:mount_guard(root)
+            mount_guard(saved['destination'])
+            roots,dest=valid_sources(saved_sources,saved['destination']);src=roots[0]
             if str(src) != saved['source'] or str(dest) != saved['destination']: raise ValueError('任务路径已改变，请重新扫描')
             plan = saved['plan']
+            if plan.get('copy_format','both') not in ('both','raw','jpg'):raise ValueError('保存的复制格式无效')
             # Metadata must still match; changed device/inode on remount is allowed only
             # when the previous content hash proves that it is still the same file.
             self.cancel.clear()
@@ -168,7 +290,7 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
                 for row in plan['rows'].values():
                     if self.cancel.is_set(): raise InterruptedError('已停止恢复')
                     p = Path(row['source'])
-                    if p.resolve() != p or src not in p.parents: raise ValueError('来源路径已经改变')
+                    row_source_root(row,roots)
                     current = fingerprint(p)
                     if current != row['fingerprint']:
                         if not row.get('source_hash') or digest(p, self.cancel.is_set) != row['source_hash'] or fingerprint(p) != current:
@@ -182,7 +304,8 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
                 planner.refresh(plan)
                 with self.lock:
                     self.plan = plan; self.rows = list(plan['rows'].values())
-                    self.source, self.destination = src, dest
+                    self.source, self.sources, self.destination = src, roots, dest
+                    if plan['options'].get('layout_version')==2:plan['sources']=[str(r) for r in roots]
                     self.revision = plan['revision'] + 1; plan['revision'] = self.revision
                     self.history = []
                     self.init_insights()
@@ -199,6 +322,8 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
             self._check(payload)
             if self.plan['options'].get('cleanup_only'):raise ValueError('这是清理扫描，请选择目标目录并重新扫描后复制')
             if not self.active_rows(): raise ValueError('没有选中要复制的文件')
+            self.validate_copy_roots()
+            self.apply_archive_layout()
             planner.refresh(self.plan)
             self.cancel.clear(); self.state.update(phase='preparing', current='核对来源与已有副本', error='', preflight=None)
         threading.Thread(target=self._prepare, daemon=True).start()
@@ -230,8 +355,7 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
         from app import valid_roots, fingerprint, digest
         try:
             active = self.active_rows()
-            mount_guard(self.source); mount_guard(self.destination)
-            src, dest = valid_roots(self.source, self.destination)
+            src, dest = self.validate_copy_roots()
             if src != self.source or dest != self.destination: raise ValueError('来源或目标路径已经改变')
             reserved={};renamed=0
             if self.duplicate_mode()=='name':
@@ -258,6 +382,7 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
                     row['source_hash'] = self.verified_digest(p, self.cancel.is_set)
                     if fingerprint(p) != row['fingerprint']: raise ValueError('读取时来源发生变化：' + row['relative'])
                     row.pop('duplicate_target', None)
+                    row.pop('batch_duplicate', None)
                     candidate = dest / row['target']
                     candidates = [str(candidate)] + sorted(history.get((row['source_hash'], row['size']), []))
                     for name in dict.fromkeys(candidates):
@@ -266,10 +391,12 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
                             row['duplicate_target'] = str(target); duplicates += 1; break
                     row.update(import_status='backed_up' if row.get('duplicate_target') else ('check' if row.get('import_status')=='check' else 'new'), verified_copy=row.get('duplicate_target',''))
             selected = self.active_shots()
+            batch_hashes={}
             for group in self.plan['groups']:
                 for sid in group['shots']:
                     if sid not in selected: continue
-                    rows = [self.plan['rows'][rid] for rid in self.plan['shots'][sid]['rows']]
+                    rows = [r for r in active if r['shot']==sid]
+                    if not rows:continue
                     suffix = 0
                     while True:
                         proposals = []; conflict = False
@@ -296,6 +423,12 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
                         if self.cancel.is_set(): raise InterruptedError('已停止检查')
                     for row, rel in proposals:
                         row['target'] = rel; reserved.add(key(dest / rel)); renamed += int(bool(suffix))
+                        if self.plan['options'].get('layout_version')==2:
+                            signature=(row.get('source_hash'),Path(row['source']).suffix.casefold())
+                            if not row.get('duplicate_target') and signature in batch_hashes:
+                                row['duplicate_target']=batch_hashes[signature];row['batch_duplicate']=True
+                                duplicates+=1
+                            batch_hashes.setdefault(signature,row.get('duplicate_target') or str(dest/rel))
             with self.lock:
                 self.revision += 1; self.plan['revision'] = self.revision
                 self.state.update(phase='reviewing', preflight={'duplicate_mode':self.duplicate_mode(), 'renamed': renamed, 'duplicates': duplicates,
@@ -314,7 +447,7 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
             if type(offset) is not int or offset < 0: raise ValueError('明细位置无效')
             rows = [r for r in self.active_rows() if r.get('duplicate_target')]
             return {'total': len(rows), 'rows': [{'source': r['source'], 'existing': r['duplicate_target'],
-                'copy_target': str(self.destination / r['target']), 'size': r['size'], 'existing_size':r.get('duplicate_size'), 'match_mode':self.duplicate_mode()} for r in rows[offset:offset+100]]}
+                'copy_target': str(self.destination / r['target']), 'size': r['size'], 'existing_size':r.get('duplicate_size'), 'batch_duplicate':r.get('batch_duplicate',False), 'match_mode':self.duplicate_mode()} for r in rows[offset:offset+100]]}
 
     def start_copy(self, payload=None):
         from app import valid_roots, fingerprint
@@ -325,8 +458,7 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
             policy = payload.get('duplicate_policy')
             if self.state['preflight']['duplicates'] and policy not in ('skip', 'again'):
                 raise ValueError('发现已有副本，请手动选择“跳过匹配文件”或“全部再复制一份”')
-            mount_guard(self.source); mount_guard(self.destination)
-            source, dest = valid_roots(self.source, self.destination)
+            source, dest = self.validate_copy_roots()
             if source != self.source or dest != self.destination: raise ValueError('路径已变化，请重新检查')
             for r in self.active_rows():
                 if Path(r['source']).resolve() != Path(r['source']) or fingerprint(Path(r['source'])) != r['fingerprint']:
@@ -347,24 +479,27 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
         from app import safe_folder, copy_one, fingerprint, digest
         report_path = None
         try:
-            mount_guard(self.source); mount_guard(self.destination)
+            self.validate_copy_roots()
             self.destination.mkdir(parents=True, exist_ok=True)
             if self.destination.resolve() != self.destination: raise ValueError('目标路径已改变')
             reports = safe_folder(self.destination, Path('.整理记录'))
+            self.apply_archive_layout(persist=True)
             report_path = reports / f'{dt.datetime.now():%Y%m%d-%H%M%S}-{secrets.token_hex(4)}.jsonl'
             selected = self.active_shots()
+            eligible={r['id'] for r in self.active_rows()}
             with report_path.open('x', encoding='utf-8') as log:
                 for group in self.plan['groups']:
                     for sid in group['shots']:
                         if self.cancel.is_set(): break
                         if sid not in selected: continue
                         for rid in self.plan['shots'][sid]['rows']:
+                            if rid not in eligible:continue
                             if self.copy_checkpoint(): break
                             row = self.plan['rows'][rid]
                             with self.lock:
                                 self.current_bytes=0; self.state['current']=row['relative']
                             try:
-                                mount_guard(self.source); mount_guard(self.destination)
+                                self.validate_copy_roots()
                                 if self.state['duplicate_policy'] == 'skip' and row.get('duplicate_target'):
                                     source = Path(row['source']); target = Path(row['duplicate_target'])
                                     if source.resolve() != source or fingerprint(source) != row['fingerprint']:
@@ -381,10 +516,11 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
                                         result = {'status': '重复跳过', 'target': str(target), 'sha256': row['source_hash'], 'match_mode':'content','content_verified':True}
 
                                 else:
-                                    result = copy_one(row, self.source, self.destination, self.copy_checkpoint, exact=True, allow_duplicate=False, progress=self.copy_progress)
+                                    from app import row_source_root
+                                    result = copy_one(row, row_source_root(row,self.copy_roots()), self.destination, self.copy_checkpoint, exact=True, allow_duplicate=False, progress=self.copy_progress)
                             except InterruptedError: break
                             except Exception as exc: result = {'status': '失败', 'error': str(exc)}
-                            result.update(file_id=rid, date=self.import_date(row), source=row['source'], planned_target=row['target'], group=group['name'])
+                            result.update(file_id=rid, shot_id=sid, date=self.import_date(row), source=row['source'], planned_target=row['target'], group=group['name'])
                             log.write(json.dumps(result, ensure_ascii=False) + '\n'); log.flush(); os.fsync(log.fileno())
                             with self.lock:
                                 self.processed_bytes += row['size'] if not (self.state['duplicate_policy']=='skip' and row.get('duplicate_target')) else 0

@@ -13,6 +13,47 @@ import app
 
 
 class OrganizerTests(unittest.TestCase):
+    def test_preview_quality_validation_and_changed_source_guard(self):
+        p=self.fixture('one.jpg');rows=app.scan(self.src,self.dest,{'detect':False})[0]
+        organizer=app.Organizer(self.root/'tasks');organizer.rows=rows;organizer.source=self.src;organizer.destination=self.dest
+        organizer.plan=app.planner.build_plan(rows,{'detect':False});organizer.revision=1;organizer.state['phase']='ready';organizer._publish()
+        ident={'plan_id':organizer.plan['id'],'revision':1};fid=next(iter(organizer.plan['rows']))
+        with self.assertRaises(ValueError):organizer.thumbnail({**ident,'file':fid,'quality':'original'})
+        output=type('Result',(),{'stdout':json.dumps({'thumbnail':'example','width':3200,'height':2000})})()
+        with patch('app.subprocess.run',return_value=output):
+            result=organizer.thumbnail({**ident,'file':fid,'quality':'high'})
+        self.assertEqual(result['width'],3200);self.assertEqual(result['preview_source'],'照片预览')
+        p.write_bytes(b'changed')
+        with self.assertRaises(ValueError):organizer.thumbnail({**ident,'file':fid,'quality':'high'})
+
+    def test_single_photo_kind_does_not_depend_on_copy_selection(self):
+        for name in ['pair.jpg','pair.nef','pair.xmp','other.jpg','keep.txt']:self.fixture(name)
+        organizer=app.Organizer(self.root/'tasks')
+        with patch.object(app.Probe,'read',return_value={'date':'2026:10:12 12:00:00'}):
+            organizer.start_scan({'source':str(self.src),'destination':str(self.dest),'options':{'detect':False}})
+            for _ in range(200):
+                if organizer.snapshot()['phase']!='scanning':break
+                time.sleep(.01)
+        self.assertEqual(organizer.snapshot()['phase'],'ready')
+        ident=lambda:{'plan_id':organizer.plan['id'],'revision':organizer.revision}
+        sid=next(sid for sid,s in organizer.plan['shots'].items() if any(organizer.plan['rows'][r]['relative']=='pair.jpg' for r in s['rows']))
+        organizer.set_scope({**ident(),'mode':'toggle_shots','filter':{},'checked':False})
+        before={p:p.read_bytes() for p in self.src.rglob('*') if p.is_file()}
+        scope=organizer.plan['scope'].copy();selected=organizer.active_shots();stale=ident()
+        organizer.edit({**ident(),'action':'photo_kind','shot':sid,'kind':'timelapse'})
+        self.assertEqual(organizer.plan['scope'],scope);self.assertEqual(organizer.active_shots(),selected)
+        moved=next(g for g in organizer.plan['groups'] if sid in g['shots'])
+        self.assertEqual(moved['kind'],'timelapse');self.assertEqual(moved['shots'],[sid])
+        self.assertEqual(len(organizer.plan['shots'][sid]['rows']),3)
+        for row in organizer.plan['shots'][sid]['rows']:self.assertIn('/延时摄影/',organizer.plan['rows'][row]['target'])
+        with self.assertRaises(ValueError):organizer.edit({**stale,'action':'photo_kind','shot':sid,'kind':'ordinary'})
+        organizer.edit({**ident(),'action':'undo'})
+        self.assertEqual(next(g for g in organizer.plan['groups'] if sid in g['shots'])['kind'],'ordinary')
+        self.assertEqual(organizer.plan['scope'],scope)
+        for invalid in ['missing',[],None,next(s for s,v in organizer.plan['shots'].items() if not v['photo'])]:
+            with self.assertRaises(ValueError):organizer.edit({**ident(),'action':'photo_kind','shot':invalid,'kind':'timelapse'})
+        self.assertEqual(before,{p:p.read_bytes() for p in self.src.rglob('*') if p.is_file()})
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
@@ -22,6 +63,50 @@ class OrganizerTests(unittest.TestCase):
     def fixture(self, name='DCIM/item.txt', data=b'original'):
         p = self.src / name; p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(data); return p
     def plan(self, options=None): return app.scan(self.src, self.dest, options or {'date': True, 'type': True})[0]
+    def test_scan_reports_actual_stages_and_file_count(self):
+        for n in range(3): self.fixture(f'photo-{n}.jpg')
+        organizer=app.Organizer(self.root/'tasks'); observed=[]
+        original_plan=app.planner.build_plan
+        def read(*args):
+            snapshot=organizer.snapshot(); observed.append((snapshot['scan_stage'],snapshot['count']))
+            return {'date':'2026:01:02 12:00:00'}
+        def build(rows,options):
+            snapshot=organizer.snapshot(); observed.append((snapshot['scan_stage'],snapshot['count']))
+            return original_plan(rows,options)
+        def imports():
+            snapshot=organizer.snapshot(); observed.append((snapshot['scan_stage'],snapshot['count']))
+        with patch.object(app.Probe,'read',side_effect=read),patch.object(app.planner,'build_plan',side_effect=build),patch.object(organizer,'assess_imports',side_effect=imports):
+            organizer.start_scan({'source':str(self.src),'destination':str(self.dest),'options':{'detect':False}})
+            for _ in range(200):
+                if organizer.snapshot()['phase']!='scanning': break
+                time.sleep(.01)
+        self.assertEqual(organizer.snapshot()['phase'],'ready')
+        self.assertEqual(observed,[('reading',0),('reading',1),('reading',2),('grouping',3),('imports',3)])
+        self.assertFalse(list(self.dest.iterdir()))
+
+    def test_photo_date_index_paging_and_scope_ignore_output_folder_layout(self):
+        for name in ['10_a.jpg','10_a.xmp','11_a.jpg','11_b.jpg','keep.txt']:self.fixture(name)
+        organizer=app.Organizer(self.root/'tasks')
+        def metadata(probe,path,scene):return {'date':'2026:10:'+('10' if Path(path).name.startswith('10') else '11')+' 12:00:00'}
+        with patch.object(app.Probe,'read',metadata):
+            organizer.start_scan({'source':str(self.src),'destination':str(self.dest),'options':{'date':False,'detect':False}})
+            for _ in range(200):
+                if organizer.snapshot()['phase']!='scanning':break
+                time.sleep(.01)
+        state=organizer.snapshot();self.assertEqual(state['phase'],'ready')
+        self.assertEqual([(d['date'],d['shots'],d['files']) for d in state['photo_dates']],[('2026-10-11',2,2),('2026-10-10',1,2)])
+        identity=lambda:{'plan_id':organizer.plan['id'],'revision':organizer.revision}
+        visible=[]
+        for g in state['groups']:
+            rows=organizer.files({**identity(),'group':g['id'],'date':'2026-10-11'})['shots'];visible.extend(rows)
+        self.assertEqual(len(visible),2);self.assertTrue(all(row['date']=='2026-10-11' for row in visible))
+        organizer.set_scope({**identity(),'mode':'toggle_shots','date':'2026-10-10','checked':False})
+        self.assertEqual(organizer.snapshot()['included'],3) # other day + unrelated text retained
+        organizer.set_scope({**identity(),'mode':'toggle_shots','date':'2026-10-10','checked':True})
+        self.assertEqual(organizer.snapshot()['included'],5)
+        with self.assertRaises(ValueError):organizer.set_scope({**identity(),'mode':'toggle_shots','date':'2026-12-31','checked':False})
+        self.assertFalse(list(self.dest.iterdir()))
+
     def test_scan_never_writes_and_nested_roots_rejected(self):
         p = self.fixture(); before = app.fingerprint(p)
         rows = self.plan()
@@ -51,15 +136,73 @@ class OrganizerTests(unittest.TestCase):
         first = Path(rows[0]['target']).parts[0]; (self.dest/first).symlink_to(outside, target_is_directory=True)
         with self.assertRaises(ValueError): app.copy_one(rows[0], self.src, self.dest)
         self.assertFalse(list(outside.iterdir()))
-    def test_metadata_and_scene_uncertainty(self):
+    def test_scan_ignores_removed_analysis_even_with_stale_flags(self):
         self.fixture('image.jpg')
         meta={'date':'2020:05:06 12:30:40','gps':[-33.86,151.21],'labels':[{'label':'beach','score':.9}]}
-        with patch.object(app.Probe, 'read', return_value=meta):
-            row = self.plan(dict(date=True,type=True,location=True,scene=True))[0]
-        self.assertTrue(row['target'].startswith('2020/2020-05-06/照片/GPS_-33.86_+151.20/海滩与海洋/'))
+        with patch.object(app.Probe, 'read', return_value=meta) as read:
+            row = self.plan(dict(date=False,type=False,location=True,scene=True))[0]
+        self.assertEqual(read.call_args.args[1],False)
+        self.assertEqual(row['target'],'2020/2020-05-06/照片/image.jpg')
         self.assertEqual(row['date_source'],'拍摄日期')
-        self.assertEqual(app.scene_label([{'label':'beach','score':.2}])[0], '景色待确认')
-        self.assertEqual(app.scene_label([{'label':'beach','score':.8},{'label':'mountain','score':.78}])[0], '景色待确认')
+        self.assertEqual((row['location'],row['scene'],row['confidence']),('位置未知','未启用',0))
+
+    def test_new_scan_forces_date_policy_and_retains_supported_options(self):
+        self.fixture('image.jpg')
+        organizer=app.Organizer(self.root/'tasks')
+        stale=dict(mode='legacy',date=False,type=False,separate_timelapse=False,location=True,scene=True,date_only=False,
+                   detect=False,min_frames=40,tolerance=15,duplicate_mode='content')
+        with patch.object(app.Probe,'read',return_value={'date':'2020:05:06 12:30:40'}):
+            organizer.start_scan({'source':str(self.src),'destination':str(self.dest),'options':stale})
+            for _ in range(200):
+                if organizer.snapshot()['phase']!='scanning':break
+                time.sleep(.01)
+        state=organizer.snapshot();self.assertEqual(state['phase'],'ready')
+        self.assertEqual(organizer.plan['options'],dict(stale,mode='groups',date=True,type=True,separate_timelapse=True,location=False,scene=False,date_only=True,layout_version=2,separate_formats=True))
+        self.assertEqual(next(iter(organizer.plan['rows'].values()))['target'],'2020/2020-05-06/JPEG/image.jpg')
+        before=json.dumps(organizer.plan,sort_keys=True)
+        for action in ('move','merge'):
+            with self.assertRaisesRegex(ValueError,'已移除'):
+                organizer.edit({'plan_id':organizer.plan['id'],'revision':organizer.revision,'action':action})
+        self.assertEqual(json.dumps(organizer.plan,sort_keys=True),before)
+
+    def test_removed_preferences_are_ignored_for_read_and_write(self):
+        organizer=app.Organizer(self.root/'tasks')
+        remaining=dict(detect=False,min_frames=40,tolerance=15,duplicate_mode='content')
+        stale=dict(mode='legacy',date=False,type=False,location=True,scene=True,separate_timelapse=False)
+        path=organizer.store.parent/'organizer-preferences.json'
+        path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(dict(remaining,**stale)))
+        self.assertEqual(organizer.preferences({}),remaining)
+        self.assertEqual(organizer.preferences({'values':dict(remaining,**stale)}),remaining)
+        self.assertEqual(json.loads(path.read_text()),remaining)
+
+    def test_old_saved_task_preserves_options_and_targets_on_restore(self):
+        self.fixture('image.jpg')
+        rows=self.plan()[0:1]
+        rows[0].update(location='GPS_A',scene='山景')
+        options=dict(mode='legacy',date=False,type=True,location=True,scene=True,detect=False)
+        organizer=app.Organizer(self.root/'tasks');organizer.rows=rows;organizer.source=self.src;organizer.destination=self.dest
+        organizer.plan=app.planner.build_plan(rows,options);organizer.revision=1;organizer.state['phase']='ready';organizer._publish();organizer.save_task()
+        targets={rid:r['target'] for rid,r in organizer.plan['rows'].items()}
+        self.assertTrue(all(target.startswith('GPS_A/山景/普通照片/') for target in targets.values()))
+        restored=app.Organizer(organizer.store);restored.resume_task({'task':organizer.plan['id']})
+        for _ in range(200):
+            if restored.snapshot()['phase']!='preparing':break
+            time.sleep(.01)
+        self.assertEqual(restored.snapshot()['phase'],'ready')
+        self.assertEqual(restored.plan['options'],options)
+        self.assertEqual({rid:r['target'] for rid,r in restored.plan['rows'].items()},targets)
+        restored.set_scope({'plan_id':restored.plan['id'],'revision':restored.revision,'mode':'all'})
+        self.assertEqual({rid:r['target'] for rid,r in restored.plan['rows'].items()},targets)
+        self.assertFalse(list(self.dest.iterdir()))
+
+    def test_windows_metadata_never_returns_gps_or_scene(self):
+        import windows_media
+        tags={'EXIF DateTimeOriginal':'2020:05:06 12:30:40','GPS GPSLatitude':object(),'GPS GPSLongitude':object()}
+        with patch.object(windows_media,'tags_for',return_value=tags):
+            meta=windows_media.metadata('unused.jpg',True)
+        self.assertEqual(meta['date'],'2020:05:06 12:30:40')
+        self.assertNotIn('gps',meta);self.assertNotIn('labels',meta);self.assertNotIn('warning',meta)
+
     def test_copy_cancel_removes_partial_only(self):
         self.fixture(data=b'x'*3000000); row=self.plan()[0]
         calls=0
@@ -155,7 +298,7 @@ class OrganizerTests(unittest.TestCase):
         row=self.plan({'date':True,'type':True,'location':True,'scene':True})[0]
         self.assertEqual(row['date_source'],'文件修改日期')
         self.assertEqual(row['location'],'位置未知')
-        self.assertEqual(row['scene'],'景色待确认')
+        self.assertEqual(row['scene'],'未启用')
         self.assertTrue(row['warning'])
 
 if __name__=='__main__':unittest.main()

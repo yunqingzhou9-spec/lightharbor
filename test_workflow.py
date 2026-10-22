@@ -11,6 +11,88 @@ from test_planner import fixtures
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_raw_format_actual_copy_and_restart_preserves_jpeg_sources(self):
+        before={str(p):p.read_bytes() for p in self.src.rglob('*') if p.is_file()}
+        self.org.set_scope({**self.identity(),'mode':'format','value':'raw'})
+        self.assertEqual(self.org.snapshot()['included'],6)
+        self.assertEqual({Path(r['source']).suffix for r in self.org.active_rows()},{'.nef','.xmp'})
+        self.prepare();result=self.execute();self.assertEqual(result['result_counts']['已复制'],6)
+        self.assertEqual({Path(row['target']).suffix for row in result['results']},{'.nef','.xmp'})
+        self.assertEqual({str(p):p.read_bytes() for p in self.src.rglob('*') if p.is_file()},before)
+        self.resume();self.assertEqual(self.org.snapshot()['copy_format'],'raw');self.assertEqual(self.org.snapshot()['included'],6)
+        self.org.set_scope({**self.identity(),'mode':'format','value':'both'});self.assertEqual(self.org.snapshot()['included'],9)
+
+    def test_jpg_format_actual_copy_sidecars_skip_and_restart(self):
+        # One paired RAW/JPEG, one RAW-only and one JPEG-only, with explicit sidecars.
+        (self.src/'DCIM/DSC_0001.jpg').unlink()
+        (self.src/'DCIM/DSC_0002.nef').unlink()
+        for name in ('DSC_0000.jpg.xmp','DSC_0000.jpg.aae','DSC_0000.nef.xmp','DSC_0002.jpg.xmp','notes.txt'):
+            (self.src/'DCIM'/name).write_bytes(name.encode())
+        rows=app.scan(self.src,self.dest,{'detect':False})[0]
+        self.org.rows=rows;self.org.plan=planner.build_plan(rows,{'detect':False,'duplicate_mode':'content'})
+        self.org.revision=1;self.org._publish();self.org.save_task()
+        before={str(p):p.read_bytes() for p in self.src.rglob('*') if p.is_file()}
+        self.org.set_scope({**self.identity(),'mode':'format','value':'jpg'})
+        names={Path(r['source']).name for r in self.org.active_rows()}
+        self.assertEqual(names,{'DSC_0000.jpg','DSC_0000.jpg.xmp','DSC_0000.jpg.aae','DSC_0002.jpg','DSC_0002.xmp','DSC_0002.jpg.xmp','notes.txt'})
+        self.assertEqual(self.org.snapshot()['copy_skipped_shots'],1)
+        self.prepare();result=self.execute();self.assertEqual(result['result_counts']['已复制'],7)
+        self.assertEqual({Path(r['source']).name for r in result['results']},names)
+        self.resume();self.assertEqual(self.org.snapshot()['copy_format'],'jpg')
+        self.assertEqual({Path(r['source']).name for r in self.org.active_rows()},names)
+        self.assertEqual(before,{str(p):p.read_bytes() for p in self.src.rglob('*') if p.is_file()})
+
+    def test_catalog_identity_stable_on_selection_and_format(self):
+        initial=self.org.snapshot()['catalog_revision'];sid=next(iter(self.org.plan['shots']))
+        self.org.set_scope({**self.identity(),'mode':'toggle_shots','shots':[sid],'checked':False})
+        self.assertEqual(initial,self.org.snapshot()['catalog_revision'])
+        self.org.set_scope({**self.identity(),'mode':'format','value':'jpg'})
+        self.assertEqual(initial,self.org.snapshot()['catalog_revision'])
+        self.org.edit({**self.identity(),'action':'photo_kind','kind':'ordinary','filter':{'query':'DSC_0001'}})
+        changed=self.org.snapshot()['catalog_revision'];self.assertNotEqual(initial,changed)
+        self.org.edit({**self.identity(),'action':'undo'})
+        self.assertEqual(initial,self.org.snapshot()['catalog_revision'])
+        self.org.plan['rows']['0']['fingerprint'][2]+=1;self.org._publish()
+        self.assertNotEqual(initial,self.org.snapshot()['catalog_revision'])
+
+    def test_photo_kind_scope_pagination_pairs_undo_and_stale(self):
+        rows=fixtures(n=45,start='2025-07-09T12:00:00')+fixtures(n=4,start='2025-07-10T12:00:00',folder='OTHER')
+        self.org.rows=rows;self.org.plan=planner.build_plan(rows,{'detect':False,'date_only':True,'date':True,'separate_timelapse':True})
+        self.org.revision=1;self.org._publish();original=planner.catalog_revision(self.org.plan)
+        first=next(iter(self.org.plan['shots']))
+        self.org.set_scope({**self.identity(),'mode':'toggle_shots','shots':[first],'checked':False})
+        selected=self.org.active_shots();old=self.identity()
+        self.org.edit({**old,'action':'photo_kind','kind':'timelapse','filter':{'date':'2025-07-09','kind':'ordinary','query':''}})
+        self.assertEqual(selected,self.org.active_shots())
+        groups=self.org.plan['groups'];time=next(g for g in groups if g['kind']=='timelapse')
+        self.assertEqual(len(time['shots']),44);self.assertEqual(time['date'],'2025-07-09')
+        self.assertTrue(time['folder'].startswith('2025/2025-07-09/延时摄影/'))
+        for sid in time['shots']:
+            rows=[self.org.plan['rows'][rid] for rid in self.org.plan['shots'][sid]['rows']]
+            self.assertEqual({r['group'] for r in rows},{time['id']});self.assertEqual(len(rows),3)
+        with self.assertRaises(ValueError):self.org.edit({**old,'action':'photo_kind','kind':'ordinary','filter':{}})
+        self.org.edit({**self.identity(),'action':'undo'});self.assertEqual(original,planner.catalog_revision(self.org.plan))
+        for action in ('rename','split','move','merge','kind'):
+            with self.assertRaises(ValueError):self.org.edit({**self.identity(),'action':action,'group':groups[0]['id']})
+        for filt in ({'kind':'bad'},{'date':'2099-01-01'},{'query':'absent'}):
+            with self.assertRaises(ValueError):self.org.edit({**self.identity(),'action':'photo_kind','kind':'ordinary','filter':filt})
+
+    def test_filtered_selection_preserves_excluded_shots_outside_filter(self):
+        sid=next(iter(self.org.plan['shots']));self.org.plan['shots'][sid]['excluded']=True
+        planner.refresh(self.org.plan);self.org._publish()
+        self.org.set_scope({**self.identity(),'mode':'toggle_shots','filter':{'query':'DSC_0001'},'checked':False})
+        self.assertTrue(self.org.plan['shots'][sid]['excluded'])
+        self.assertEqual(len(self.org.active_shots()),1)
+
+    def test_filtered_scope_catalog_atomic_and_other_shots_preserved(self):
+        rows=self.org.photo_catalog({**self.identity(),'filter':{'query':'DSC_0001','kind':'timelapse'}})['shots']
+        self.assertEqual(len(rows),1);sid=rows[0]['id']
+        old=self.identity();self.org.set_scope({**old,'mode':'toggle_shots','filter':{'query':'DSC_0001','kind':'timelapse'},'checked':False})
+        self.assertNotIn(sid,self.org.active_shots());self.assertEqual(len(self.org.active_shots()),2)
+        with self.assertRaises(ValueError):self.org.set_scope({**old,'mode':'format','value':'raw'})
+        for filters in [{'kind':'bad'},{'groups':['missing']},{'query':3},{'date':'2099-01-01'}]:
+            with self.assertRaises(ValueError):self.org.photo_catalog({**self.identity(),'filter':filters})
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name).resolve()
         self.src=self.root/'card'; self.src.mkdir(); self.dest=self.root/'archive'; self.store=self.root/'tasks'
@@ -84,7 +166,7 @@ class WorkflowTests(unittest.TestCase):
         sids=list(self.org.plan['shots']);gid=self.org.plan['groups'][0]['id']
         self.org.set_scope(dict(self.identity(),mode='photos',shots=[sids[0]]))
         self.org.set_scope(dict(self.identity(),mode='photos',shots=[sids[1]],append=True))
-        self.org.edit(dict(self.identity(),action='rename',group=gid,name='山顶日落'))
+        self.org.plan=planner.edit(self.org.plan,dict(action='rename',group=gid,name='山顶日落'));self.org.revision=self.org.plan['revision'];self.org._publish();self.org.save_task()
         s=self.resume();self.assertEqual(s['included'],6);self.assertEqual(s['groups'][0]['name'],'山顶日落')
         self.assertFalse(self.dest.exists());self.prepare();self.assertFalse(self.dest.exists())
     def test_duplicate_requires_manual_choice_every_time(self):
@@ -112,7 +194,7 @@ class WorkflowTests(unittest.TestCase):
         for r in s['results']:self.assertEqual(app.digest(r['source']),app.digest(r['target']))
     def test_history_finds_verified_copy_after_plan_folder_changed(self):
         self.prepare();self.execute();self.ready()
-        self.org.edit(dict(self.identity(),action='rename',group=self.org.plan['groups'][0]['id'],name='重新命名'))
+        self.org.plan=planner.edit(self.org.plan,dict(action='rename',group=self.org.plan['groups'][0]['id'],name='重新命名'));self.org.revision=self.org.plan['revision'];self.org._publish();self.org.save_task()
         s=self.prepare();self.assertEqual(s['preflight']['duplicates'],9)
         page=self.org.duplicate_page(dict(self.identity(),offset=0));self.assertEqual(page['total'],9)
         self.assertIn('重新命名',page['rows'][0]['copy_target'])

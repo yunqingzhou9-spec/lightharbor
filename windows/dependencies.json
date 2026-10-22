@@ -1,0 +1,87 @@
+{
+  "python": {
+    "file": "python-3.14.7-embed-amd64.zip",
+    "sha256": "d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15",
+    "source": "https://www.python.org/ftp/python/3.14.7/python-3.14.7-embed-amd64.zip"
+  },
+  "wheels": [
+    {
+      "file": "bottle-0.13.4-py2.py3-none-any.whl",
+      "sha256": "045684fbd2764eac9cdeb824861d1551d113e8b683d8d26e296898d3dd99a12e"
+    },
+    {
+      "file": "cffi-2.1.1-cp314-cp314-win_amd64.whl",
+      "sha256": "3222ba5d678f80a030e6afbcc33dc1ae5cb45facabb61cee2c7016b8432fde48"
+    },
+    {
+      "file": "clr_loader-0.3.1-py3-none-any.whl",
+      "sha256": "cbad189de20d202a7d621956b0fc38049e13c9bf7ca2923441eff725cd121aa1"
+    },
+    {
+      "file": "exifread-3.5.1-py3-none-any.whl",
+      "sha256": "e5426ce2857423ad401e575ea9d159dc97449dc041fb6e61b35109caea72c311"
+    },
+    {
+      "file": "pillow-13.0.0-cp314-cp314-win_amd64.whl",
+      "sha256": "f7cbb7a64e7ec664775195e4f81923bc8a93d9451b963f844e59118f63147a7a"
+    },
+    {
+      "file": "proxy_tools-0.1.0-py3-none-any.whl",
+      "sha256": "b03b187ecdaa1a090b058bb80e0c83249bf02b4455c5beeafe3c9b2e5c0a9722"
+    },
+    {
+      "file": "pycparser-3.11-py3-none-any.whl",
+      "sha256": "51d5a8ba2be0bbe440b99d2112604c95bbbc3c2748a64260186c541e1729cd80"
+    },
+    {
+      "file": "pythonnet-3.2.1-cp311.cp312.cp313.cp314.cp315-none-any.whl",
+      "sha256": "dd5668b74b0c903d9a24e1ba86f728fc490f8e919d56b3c24bf06739b9ee2b7f"
+    },
+    {
+      "file": "pywebview-6.2.1-py3-none-any.whl",
+      "sha256": "9d07275f53894ab4d5e2e0e996227193e7187dec276d9b624dccbce029216b46"
+    },
+    {
+      "file": "typing_extensions-4.16.0-py3-none-any.whl",
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+    },
+    {
+      "file": "rawpy-0.27.1-cp314-cp314-win_amd64.whl",
+      "sha256": "b188bbc23dc4497efea94a610ac278aaba81930e090dcb019f20d8c752f6063e",
+      "source": "https://files.pythonhosted.org/packages/4b/3c/db96d86964fb7318c082b855dc7eaa94c31f3e16a85aee2146a4ed4ae947/rawpy-0.27.1-cp314-cp314-win_amd64.whl"
+    },
+    {
+      "file": "numpy-2.5.4-cp314-cp314-win_amd64.whl",
+      "sha256": "2ca144f15135b6212a5c47b1e2aeca6e412f102f95a2d5d88d8aec77eb255de3",
+      "source": "https://files.pythonhosted.org/packages/52/9a/e1e512ebc948d5b9dd33b08736760f0ebbed2848fd4eda1f553088a6dcee/numpy-2.5.4-cp314-cp314-win_amd64.whl"
+    },
+    {
+      "file": "pi_heif-1.4.0-cp314-cp314-win_amd64.whl",
+      "sha256": "743b971b9c0d35be8435702443596e3e9280084e68fc8d5c4de4b31fb12a1417",
+      "source": "https://files.pythonhosted.org/packages/a6/67/1373582c4bfa3ca2092befd5555fc52d581fc34ad4a5cb0d8401d7f847b4/pi_heif-1.4.0-cp314-cp314-win_amd64.whl"
+    }
+  ],
+  "provenance": "Retained vendor artifacts plus official PyPI pinned rawpy0.27.1, numpy2.5.4 and pi-heif1.4.0 Windows cp314 AMD64 wheels; compressed corresponding vendor sources included, not executed",
+  "sources": [
+    {
+      "file": "pi_heif-1.4.0.tar.gz",
+      "sha256": "e1199d9d41d9ecc877cf3ae7322ff099f6404574f2e62da47590cd4ecb9ec554",
+      "source": "https://files.pythonhosted.org/packages/6a/a2/70168b601b41bdf5726dfc8dc110eb4052a2e851fed9c9bdae95910e401d/pi_heif-1.4.0.tar.gz"
+    },
+    {
+      "file": "rawpy-0.27.1.tar.gz",
+      "sha256": "3194d64ff690ac945e1a43237edae8a18f1f493751924de1ae2bcef473c0fb79",
+      "source": "https://files.pythonhosted.org/packages/f3/ae/c1c7816ed3f3cbf7ca284a37371243500f4eb39b6a32f7368b585c4ef5c4/rawpy-0.27.1.tar.gz"
+    },
+    {
+      "file": "libheif-1.23.0.tar.gz",
+      "sha256": "50ea4fbd1e19c7b8820271d6d0c73f2623fec5d659ce9fae57e48dbeb94fab9a",
+      "source": "https://codeload.github.com/strukturag/libheif/tar.gz/refs/tags/v1.23.0"
+    },
+    {
+      "file": "libde265-1.1.0.tar.gz",
+      "sha256": "46c1ddb660a7cceaf05e954180360d265dcb4ce7b5b682a7ab541cd8f55bb93e",
+      "source": "https://codeload.github.com/strukturag/libde265/tar.gz/refs/tags/v1.1.0"
+    }
+  ]
+}

@@ -22,6 +22,7 @@ class OrganizerInsights:
         self.copy_finished = None
 
     def duplicate_mode(self):
+        if self.plan.get('options',{}).get('layout_version')==2:return 'content'
         return self.plan.get('options',{}).get('duplicate_mode','name')
 
     @staticmethod
@@ -196,17 +197,17 @@ class OrganizerInsights:
                 path = str(Path(result['target']).parent)
                 folder = folders.setdefault(path, {'path':path,'copied':0,'skipped':0})
                 folder['copied' if status=='已复制' else 'skipped'] += 1
-        return {'counts':counts, 'folders':sorted(folders.values(),key=lambda r:r['path'])}
+        shots={status:len({r.get('shot_id',r.get('source')) for r in results if r.get('status')==status}) for status in counts}
+        return {'counts':counts, 'shots':shots, 'folders':sorted(folders.values(),key=lambda r:r['path'])}
 
     def save_execution(self):
         from copy_workflow import atomic_json
         if not self.store or not self.plan: return
         results = self.state.get('results', [])
-        if not results: return
         ident = self.state.get('execution_id')
         if not ident: return
         record = {'id':ident,'created':dt.datetime.now().isoformat(timespec='seconds'),
-                  'task':self.plan['id'],'destination':str(self.destination),'source':str(self.source),
+                  'task':self.plan['id'],'destination':str(self.destination),'source':str(self.source),'sources':[str(r) for r in self.copy_roots()],
                   'dates':sorted({self.import_date(r) for r in self.active_rows()}),
                   'phase':self.state['phase'],'report':self.state.get('report',''),
                   'results':results, **self.completion_summary(results)}
@@ -250,6 +251,7 @@ class OrganizerInsights:
             else:
                 self._check(payload, ('done','cancelled','error'))
                 folders = self.completion_summary(self.state.get('results',[]))['folders']; root = self.destination
+                if root and root.is_dir():folders=[*folders,{'path':str(root)}]
             folder = next((Path(f['path']) for f in folders if f['path'] == payload.get('folder')), None)
             if folder is None: raise ValueError('请选择结果中的文件夹')
             mount_guard(root)

@@ -20,6 +20,80 @@ def fixtures(n=35,start='2025-07-09T23:59:00',interval=5,folder='DCIM',offset=0,
     return rows
 
 class PlannerTests(unittest.TestCase):
+    def test_scoped_type_correction_keeps_sequences_and_merges_ordinary(self):
+        rows=fixtures(n=6,start='2025-07-09T12:00:00',paired=True)
+        p=planner.build_plan(rows,{'detect':False,'date_only':True,'date':True,'separate_timelapse':True})
+        ids=list(p['shots']);ordinary=p['groups'][0]['id']
+        a=planner.edit(p,{'action':'photo_kind','kind':'timelapse','shots':ids[:2]})
+        b=planner.edit(a,{'action':'photo_kind','kind':'timelapse','shots':ids[2:4]})
+        sequences=[g for g in b['groups'] if g['kind']=='timelapse']
+        self.assertEqual(len(sequences),2);self.assertEqual({g['id'] for g in sequences},{g['id'] for g in planner.edit(b,{'action':'photo_kind','kind':'timelapse','shots':ids[:4]})['groups'] if g['kind']=='timelapse'})
+        c=planner.edit(b,{'action':'photo_kind','kind':'ordinary','shots':ids[:4]})
+        self.assertEqual(len(c['groups']),1);self.assertEqual(c['groups'][0]['id'],ordinary)
+        self.assertEqual(len(c['groups'][0]['shots']),6)
+        self.assertTrue(all(r['target'].startswith('2025/2025-07-09/普通照片/') for r in c['rows'].values()))
+
+    def test_kind_correction_partitions_original_groups_and_actual_dates(self):
+        p=planner.build_plan(fixtures(n=5,paired=False)+fixtures(n=4,folder='SECOND',offset=100,paired=False),{'detect':False,'date_only':True,'separate_timelapse':True})
+        # Simulate a recovered/custom ordinary group distinct from the first group.
+        ids=list(p['shots']);p=planner.edit(p,{'action':'move','shots':ids[-4:],'new_name':'旧组'})
+        corrected=planner.edit(p,{'action':'photo_kind','kind':'timelapse','shots':ids})
+        times=[g for g in corrected['groups'] if g['kind']=='timelapse']
+        self.assertEqual(len(times),2)
+        self.assertEqual({frozenset(g['shots']) for g in times},{frozenset(ids[:5]),frozenset(ids[-4:])})
+        self.assertEqual(len({g['folder'] for g in times}),2)
+        # Legacy cross-midnight group is separated by each shot's actual date.
+        legacy=planner.build_plan(fixtures(n=35,paired=False),{'min_frames':30,'date':True})
+        mixed=planner.edit(legacy,{'action':'photo_kind','kind':'ordinary','shots':list(legacy['shots'])})
+        self.assertEqual({g['date'] for g in mixed['groups']},{'2025-07-09','2025-07-10'})
+        self.assertTrue(all(len({mixed['shots'][sid]['date'] for sid in g['shots']})==1 for g in mixed['groups']))
+
+    def test_unknown_type_correction_and_digest_exclusion(self):
+        p=planner.build_plan(fixtures(n=4,reliable=False),{'min_frames':3,'date_only':True,'separate_timelapse':True})
+        self.assertEqual(p['groups'][0]['kind'],'unknown');ids=list(p['shots'])
+        result=planner.edit(p,{'action':'photo_kind','kind':'timelapse','shots':ids[:2]})
+        self.assertEqual(sorted(g['kind'] for g in result['groups']),['timelapse','unknown'])
+        old=planner.catalog_revision(p);p['shots'][ids[0]]['excluded']=True;planner.refresh(p)
+        self.assertNotEqual(old,planner.catalog_revision(p))
+
+    def test_date_only_splits_recognized_midnight_sequence_and_keeps_every_format(self):
+        rows=fixtures()
+        p=planner.build_plan(rows,dict(date_only=True,mode='groups',date=True,type=True,separate_timelapse=True))
+        self.assertEqual(len(p['groups']),2)
+        self.assertEqual(sum(g['frames'] for g in p['groups']),35)
+        self.assertTrue(all(g['kind']=='suspected' for g in p['groups']))
+        self.assertEqual({g['date'] for g in p['groups']},{'2025-07-09','2025-07-10'})
+        for g in p['groups']:
+            dates={p['shots'][sid]['date'] for sid in g['shots']}
+            self.assertEqual(dates,{g['date']})
+            self.assertTrue(g['folder'].startswith('2025/'+g['date']+'/延时摄影/'))
+        for r in p['rows'].values():
+            shot=p['shots'][r['shot']]
+            self.assertTrue(r['target'].startswith('2025/'+shot['date']+'/延时摄影/'))
+        g=p['groups'][0]
+        corrected=planner.edit(p,dict(action='kind',group=g['id'],kind='ordinary'))
+        ordinary=next(x for x in corrected['groups'] if x['id']==g['id'])
+        self.assertTrue(ordinary['folder'].startswith('2025/'+g['date']+'/普通照片/'))
+        for action in ('split','rename'):
+            with self.assertRaisesRegex(ValueError,'普通照片按日期归档'):
+                planner.edit(corrected,dict(action=action,group=g['id'],name='new',pivot=g['shots'][1]))
+        sequence=next(x for x in p['groups'] if x['id']!=g['id'])
+        renamed=planner.edit(p,dict(action='rename',group=sequence['id'],name='自定义延时'))
+        split=planner.edit(renamed,dict(action='split',group=sequence['id'],pivot=sequence['shots'][1],name='第二段'))
+        self.assertEqual(len(split['groups']),3)
+        self.assertTrue(any(g['name']=='第二段' for g in split['groups']))
+
+    def test_timelapse_separate_folder_and_catalog_midnight(self):
+        plan=planner.build_plan(fixtures(),{'separate_timelapse':True})
+        group=plan['groups'][0];self.assertIn('/延时摄影/',group['folder'])
+        self.assertEqual(len(planner.matching_photo_ids(plan,{'kind':'timelapse'})),35)
+        day=planner.photo_catalog(plan,{'date':'2025-07-10','kind':'timelapse'})
+        self.assertTrue(day);self.assertTrue(all(s['date']=='2025-07-10' for s in day))
+        renamed=planner.edit(plan,{'action':'rename','group':group['id'],'name':'自定义序列'})
+        self.assertTrue(renamed['groups'][0]['folder'].endswith('/延时摄影/自定义序列'))
+        legacy=planner.build_plan(fixtures(),{})
+        self.assertNotIn('/延时摄影/',legacy['groups'][0]['folder'])
+
     def test_pairing_count_midnight_and_raw_jpeg_folders(self):
         p=planner.build_plan(fixtures(),{})
         self.assertEqual(len(p['shots']),35);self.assertEqual(len(p['groups']),1)
@@ -159,7 +233,7 @@ class ExecutionTests(unittest.TestCase):
         self.fail(self.org.snapshot())
     def test_no_output_before_final_confirmation_and_stale_revision(self):
         old=self.identity();g=self.org.plan['groups'][0]
-        self.org.edit(dict(old,action='rename',group=g['id'],name='日落'))
+        self.org.edit(dict(old,action='photo_kind',kind='ordinary',filter={}))
         self.assertFalse(self.dest.exists())
         with self.assertRaises(ValueError):self.org.prepare(old)
         with self.assertRaises(ValueError):self.org.start_copy(self.identity())

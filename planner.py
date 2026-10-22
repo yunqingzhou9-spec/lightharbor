@@ -1,5 +1,7 @@
 """Pure in-memory shooting groups. No filesystem writes or image decoding."""
 import copy
+import hashlib
+import json
 import os
 import datetime as dt
 import math
@@ -40,8 +42,8 @@ def make_shots(rows):
     def create(items):
         primary = sorted(items, key=lambda r: r['kind'] != 'RAW原片')[0]
         reliable = next((r for r in items if r.get('reliable_time')), primary)
-        sid = ident()
-        shots[sid] = {'id':sid, 'rows':[r['id'] for r in items], 'time':reliable.get('capture_time', ''), 'date':reliable['date'], 'reliable':reliable.get('reliable_time',False), 'camera':reliable.get('camera',''), 'parent':str(Path(primary['relative']).parent), 'seq':sequence_number(primary['relative']), 'photo':primary['kind'] in PHOTO, 'excluded':False}
+        sid = hashlib.sha256(json.dumps(sorted((r['source'],r.get('fingerprint')) for r in items),sort_keys=True).encode()).hexdigest()[:16]
+        shots[sid] = {'id':sid, 'rows':[r['id'] for r in items], 'time':reliable.get('capture_time', ''), 'date':reliable['date'], 'reliable':reliable.get('reliable_time',False), 'camera':reliable.get('camera',''), 'parent':str(Path(primary['source']).parent), 'seq':sequence_number(primary['relative']), 'photo':primary['kind'] in PHOTO, 'excluded':False}
         for row in items:
             row['format'] = format_folder(row)
             row['shot'] = sid
@@ -50,7 +52,7 @@ def make_shots(rows):
     buckets = {}
     for row in rows:
         if row['kind'] in PHOTO:
-            p = Path(row['relative'])
+            p = Path(row['source'])
             buckets.setdefault((str(p.parent),p.stem.casefold()), []).append(row)
     for items in buckets.values():
         # Only pair unambiguous RAW + one rendered photo from the same source folder.
@@ -66,12 +68,12 @@ def make_shots(rows):
     primary_rows = [r for r in rows if r['kind'] in PHOTO]
     sidecar_index = {}
     for r in primary_rows:
-        p=Path(r['relative'])
+        p=Path(r['source'])
         for name in {p.name.casefold(),p.stem.casefold()}:
             sidecar_index.setdefault((str(p.parent),name),[]).append(r)
     for row in rows:
         if row['id'] in lookup: continue
-        p = Path(row['relative']); ext = p.suffix.lower()
+        p = Path(row['source']); ext = p.suffix.lower()
         if ext in {'.xmp','.aae'}:
             candidates = sidecar_index.get((str(p.parent),p.stem.casefold()),[])
             if ext=='.xmp' and any(r['kind']=='RAW原片' for r in candidates): candidates=[r for r in candidates if r['kind']=='RAW原片']
@@ -127,10 +129,17 @@ def build_plan(rows, options):
         for stream in streams.values():
             stream.sort(key=lambda s:(s['time'], s['seq'] if s['seq'] is not None else -1))
             for run,interval in regular_runs(stream,minimum,tolerance):
-                n+=1
-                name=timelapse_name(run[0]['time'],run[-1]['time'])
-                add([s['id'] for s in run],name,'suspected','间隔规律，待你确认；'+('相机信息缺失，仅依据同一来源目录' if not run[0]['camera'] else '相机信息一致'),interval)
-                plan['groups'][-1]['auto_name']=True
+                # Detect the cadence across midnight, then put every exposure in
+                # its actual date. Short midnight fragments remain part of the
+                # recognized sequence rather than falling below min_frames.
+                dated_runs={}
+                for shot in run:
+                    dated_runs.setdefault(shot['date'] if options.get('date_only') else '', []).append(shot)
+                for segment in dated_runs.values():
+                    n+=1
+                    name=timelapse_name(segment[0]['time'],segment[-1]['time'])
+                    add([s['id'] for s in segment],name,'suspected','间隔规律，待你确认；'+('相机信息缺失，仅依据同一来源目录' if not segment[0]['camera'] else '相机信息一致'),interval)
+                    plan['groups'][-1]['auto_name']=True
     missing={}
     for sid,shot in plan['shots'].items():
         if sid not in assigned and shot['photo'] and not shot['reliable']: missing.setdefault((shot['parent'],shot['date']),[]).append(sid)
@@ -153,6 +162,11 @@ def build_plan(rows, options):
                 tags.append(values[0] if len(values)==1 else '混合景色' if values else members[0]['scene'])
         rest.setdefault((shot['date'] if options.get('date',True) else '',label,tuple(tags)),[]).append(sid)
     for (_,label,_),ids in sorted(rest.items()):add(ids,label,'ordinary')
+    for g in plan['groups']:
+        if g['kind'] in ('suspected','timelapse','unknown'):
+            first=plan['shots'][g['shots'][0]]
+            primary=plan['rows'][first['rows'][0]]
+            g['sequence_key']=hashlib.sha256((first['parent']+'\0'+str(first['time'])+'\0'+str(first['seq'])+'\0'+sequence_member(primary)).encode()).hexdigest()
     refresh(plan)
     return plan
 
@@ -191,6 +205,10 @@ def refresh(plan):
                           next(iter(kinds)) if len(kinds)==1 else '其他文件')
                 parts.append(category)
                 if g['name']==category:group_parts=[]
+        if opts.get('date_only') and g['kind']=='ordinary' and any(r['kind'] in PHOTO for r in allfiles) and g['name']!='普通照片':
+            parts.append('普通照片')
+        if opts.get('mode')!='legacy' and opts.get('separate_timelapse',False) and g['kind'] in ('suspected','timelapse'):
+            parts.append('延时摄影')
         g['folder']=Path(*parts,*group_parts).as_posix()
         for sid in g['shots']:
             shot=plan['shots'][sid]
@@ -198,18 +216,136 @@ def refresh(plan):
                 r=plan['rows'][rid]
                 r['group']=g['id'];r['excluded']=shot['excluded']
                 r['target']=Path(g['folder'],r['format'],Path(r['source']).name).as_posix()
-    folders=[g['folder'].casefold() for g in plan['groups']]
-    if len(folders)!=len(set(folders)):raise ValueError('同一日期存在同名文件夹，请改名或合并')
+    if plan['options'].get('layout_version') == 2:
+        refresh_layout(plan)
+    else:
+        folders=[g['folder'].casefold() for g in plan['groups']]
+        if len(folders)!=len(set(folders)):raise ValueError('同一日期存在同名文件夹，请改名或合并')
+
+
+def category(plan, group):
+    if group['kind'] in ('suspected','timelapse'): return '延时摄影'
+    if group['kind']=='unknown': return '时间待确认'
+    kinds={plan['rows'][rid]['kind'] for sid in group['shots'] for rid in plan['shots'][sid]['rows']}
+    return '普通照片' if kinds & PHOTO else '伴随待确认' if kinds=={'伴随文件'} else next(iter(kinds)) if len(kinds)==1 else '其他文件'
+
+
+def sequence_member(row):
+    # A replacement at the same pathname is not evidence of the old sequence.
+    fp=row.get('fingerprint',[])
+    return hashlib.sha256(json.dumps([row['source'],fp[2:4],row.get('capture_time'),row.get('camera')],ensure_ascii=False).encode()).hexdigest()
+
+
+def refresh_layout(plan):
+    """Layout depends on the complete scan, never the current copy subset."""
+    dates={}
+    for g in plan['groups']:
+        for sid in g['shots']: dates.setdefault(plan['shots'][sid]['date'],set()).add(category(plan,g))
+    routes=plan.get('archive_routes',{})
+    for g in plan['groups']:
+        cat=category(plan,g)
+        seq=g.get('sequence_key','')
+        for sid in g['shots']:
+            shot=plan['shots'][sid];date=shot['date'];prefix=Path(date[:4],date)
+            saved=routes.get(date,{}).get(cat)
+            if saved is not None: prefix=Path(saved)
+            elif len(dates[date])!=1 or cat not in ('普通照片','延时摄影','视频'): prefix/=cat
+            if g['kind'] in ('suspected','timelapse','unknown'):
+                # A source-specific suffix distinguishes equal-time sequences.
+                name=g['name']+'_'+seq[:8] if seq else g['name']
+                name=plan.get('sequence_routes',{}).get(seq,name)
+                prefix/=name
+            g['folder']=prefix.as_posix()
+            for rid in shot['rows']:
+                row=plan['rows'][rid];folder=prefix
+                if plan['options'].get('separate_formats',True) and shot['photo']:folder/=row['format']
+                row['target']=str(folder/Path(row['source']).name)
+                row['archive_category']=cat;row['sequence_key']=seq
+
+
+def reconcile_scan(plan, previous):
+    """Retain unchanged shot identities, choice and corrections across source edits."""
+    old=previous['shots'];common=set(old)&set(plan['shots'])
+    old_groups={sid:g for g in previous['groups'] for sid in g['shots']}
+    # Keep original sequences/corrections separate from newly detected material.
+    kept=[]
+    for g in previous['groups']:
+        ids=[sid for sid in g['shots'] if sid in common]
+        if ids:
+            item=copy.deepcopy(g);item['shots']=ids
+            if item.get('sequence_key'):item['auto_name']=False
+            kept.append(item)
+    for g in plan['groups']:
+        shared=[sid for sid in g['shots'] if sid in common]
+        added=[sid for sid in g['shots'] if sid not in common]
+        prior=[old_groups[sid] for sid in shared]
+        sequences={item.get('sequence_key') for item in prior}
+        # Detection established one continuous run in this exact source stream.
+        # Continue only one known sequence; never bridge corrected or distinct runs.
+        if (added and prior and g['kind'] in ('suspected','timelapse') and len(sequences)==1
+                and None not in sequences and all(item['kind'] in ('suspected','timelapse') for item in prior)):
+            target=next((item for item in kept if item.get('sequence_key') in sequences),None)
+            if target is not None:target['shots'].extend(added);continue
+        g['shots']=added
+        if added:kept.append(g)
+    # Ordinary groups can share a date/category path; sequence groups remain distinct.
+    plan['groups']=kept
+    if previous.get('scope',{}).get('mode','all')=='all':chosen=common
+    else:chosen=common & set(previous['scope'].get('shots',[]))
+    plan['scope']={'mode':'photos','shots':sorted(chosen)}
+    plan['copy_format']=previous.get('copy_format','both')
+    refresh(plan)
+
+def catalog_revision(plan):
+    """Content identity excludes selection, copy mode and optimistic write revision."""
+    rows={rid:{k:r.get(k) for k in ('source','relative','fingerprint','size','kind','format','shot','group','target','excluded','capture_time','date','reliable_time','camera','warning')} for rid,r in plan['rows'].items()}
+    groups=[{k:g.get(k) for k in ('id','name','kind','shots','folder','note','interval','auto_name')} for g in plan['groups']]
+    value={'id':plan['id'],'rows':rows,'shots':plan['shots'],'groups':groups}
+    return hashlib.sha256(json.dumps(value,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+
+
+def reclassify_photos(plan, ids, kind):
+    """Move only explicitly selected shots, retaining original sequence boundaries."""
+    if kind not in ('ordinary','timelapse') or not ids or any(not plan['shots'][sid]['photo'] or plan['shots'][sid]['excluded'] for sid in ids):
+        raise ValueError('请选择当前浏览范围内可调整的照片')
+    original=list(plan['groups'])
+    for group in original:
+        selected=[sid for sid in group['shots'] if sid in ids]
+        if not selected:continue
+        # Existing confirmed sequences keep their boundaries and names.
+        if group['kind']==kind:continue
+        dated={}
+        for sid in selected:
+            shot=plan['shots'][sid]
+            dated.setdefault((shot['date'],shot['parent'] if kind=='timelapse' else ''),[]).append(sid)
+        group['shots']=[sid for sid in group['shots'] if sid not in ids]
+        for (date,parent), members in dated.items():
+            target=None
+            if kind=='ordinary':
+                target=next((g for g in plan['groups'] if g['kind']=='ordinary' and g['name']=='普通照片' and g.get('date')==date and all(plan['shots'][sid]['photo'] and plan['shots'][sid]['date']==date for sid in g['shots'])),None)
+            if target is None:
+                ordered=sorted_shots(plan,members)
+                first,last=(plan['shots'][ordered[i]] for i in (0,-1))
+                target={'id':ident(),'name':'普通照片' if kind=='ordinary' else timelapse_name(first['time'] or date,last['time'] or date),'kind':kind,'shots':[],'interval':0,'note':'用户标记的'+('普通照片' if kind=='ordinary' else '延时摄影'),'auto_name':kind=='timelapse','date':date}
+                if kind=='timelapse':target['sequence_key']=group.get('sequence_key') or hashlib.sha256((group['id']+'\0'+date+'\0'+parent+'\0'+ordered[0]).encode()).hexdigest()
+                plan['groups'].append(target)
+            target['shots'].extend(members)
+    plan['groups']=[g for g in plan['groups'] if g['shots']]
+
 
 def edit(plan, payload):
     """Transactional edits, with caller storing prior plan for undo."""
     candidate=copy.deepcopy(plan); groups={g['id']:g for g in candidate['groups']}
     action=payload.get('action');gid=payload.get('group');g=groups.get(gid)
     if action in {'rename','kind','split','merge'} and not g:raise ValueError('请先选择拍摄组')
+    if candidate['options'].get('date_only') and action in ('rename','split') and g and g['kind']=='ordinary':
+        raise ValueError('普通照片按日期归档，仅延时或待确认序列支持改名和拆分')
     ids=payload.get('shots',[])
     if not isinstance(ids,list) or any(s not in candidate['shots'] for s in ids):raise ValueError('照片选择已失效')
     ids=set(ids)
-    if action=='rename':
+    if action=='photo_kind':
+        reclassify_photos(candidate,ids,payload.get('kind'))
+    elif action=='rename':
         g['name']=folder_name(payload.get('name',''));g['auto_name']=False
     elif action=='kind':
         if payload.get('kind') not in ('ordinary','timelapse'):raise ValueError('未知类型')
@@ -245,11 +381,11 @@ def edit(plan, payload):
 def summaries(plan):
     return [{k:v for k,v in g.items() if k!='shots'} for g in plan['groups']]
 
-def page(plan,gid,page_number=0,page_size=40):
+def page(plan,gid,page_number=0,page_size=40,date=None):
     g=next((g for g in plan['groups'] if g['id']==gid),None)
     if not g:raise ValueError('拍摄组不存在')
     if page_number<0:raise ValueError('页码无效')
-    ids=g['shots'];result=[]
+    ids=[sid for sid in g['shots'] if date is None or plan['shots'][sid]['photo'] and plan['shots'][sid]['date']==date];result=[]
     for sid in ids[page_number*page_size:(page_number+1)*page_size]:
         s=copy.deepcopy(plan['shots'][sid]);s['files']=[{k:v for k,v in plan['rows'][rid].items() if k not in ('fingerprint','source')} for rid in s.pop('rows')]
         result.append(s)
@@ -266,3 +402,32 @@ def page(plan,gid,page_number=0,page_size=40):
         photo=next((r for r in files if r['format']=='JPEG'),next((r for r in files if r['kind'] in PHOTO),None))
         if photo:samples.append({'file':photo['id'],'name':photo['relative']})
     return {'samples':samples,'shots':result,'total':len(ids),'page':page_number,'pages':max(1,math.ceil(len(ids)/page_size)),'tree':tree}
+
+
+def matching_photo_ids(plan, filters):
+    """One validated filter shared by catalog and atomic selection; no copy-format filtering."""
+    if not isinstance(filters,dict) or set(filters)-{'date','kind','query','groups'}:raise ValueError('照片筛选无效')
+    date=filters.get('date','');kind=filters.get('kind','all');query=filters.get('query','');groups=filters.get('groups')
+    if not isinstance(date,str) or date and date not in {s['date'] for s in plan['shots'].values() if s['photo']}:raise ValueError('拍摄日期无效')
+    if kind not in ('all','ordinary','timelapse') or not isinstance(query,str) or len(query)>500:raise ValueError('照片筛选无效')
+    group_map={g['id']:g for g in plan['groups']}
+    if groups is not None and (not isinstance(groups,list) or any(not isinstance(g,str) or g not in group_map for g in groups)):raise ValueError('拍摄组筛选无效')
+    result=[];query=query.casefold()
+    for sid in sorted_shots(plan,plan['shots']):
+        shot=plan['shots'][sid]
+        if not shot['photo'] or date and shot['date']!=date:continue
+        row=plan['rows'][shot['rows'][0]];group=group_map.get(row['group'])
+        if not group or groups is not None and group['id'] not in groups:continue
+        is_time=group['kind'] in ('suspected','timelapse')
+        if kind!='all' and (kind=='timelapse')!=is_time:continue
+        if query and query not in (' '.join(plan['rows'][rid]['relative'] for rid in shot['rows'])+' '+shot['date']+' '+group['name']).casefold():continue
+        result.append(sid)
+    return result
+
+def photo_catalog(plan, filters):
+    result=[];groups={g['id']:g for g in plan['groups']}
+    for sid in matching_photo_ids(plan,filters):
+        shot=plan['shots'][sid];files=[{k:v for k,v in plan['rows'][rid].items() if k not in ('fingerprint','source','source_hash')} for rid in shot['rows']]
+        group=groups[files[0]['group']]
+        result.append({k:v for k,v in shot.items() if k!='rows'}|{'files':files,'lhGroup':group['id'],'group_kind':group['kind'],'group_name':group['name']})
+    return result

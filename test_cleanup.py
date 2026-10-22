@@ -9,6 +9,16 @@ from test_planner import fixtures
 from card_cleanup import card_guard, source_card_guard
 
 class CleanupTests(unittest.TestCase):
+    def test_copy_raw_filter_does_not_change_cleanup_catalog_or_delete_scope(self):
+        self.org.set_scope({**self.ident(),'mode':'format','value':'raw'})
+        self.assertEqual(self.org.snapshot()['included'],6)
+        catalog=self.org.cleanup_dates(self.ident())
+        self.assertEqual(sum(s['count'] for s in catalog['shots']),9)
+        self.assertEqual({s['kind'] for s in catalog['shots']},{'suspected'})
+        before={p.name:p.read_bytes() for p in self.source.iterdir()}
+        preview=self.preview();self.assertEqual(preview['files'],9)
+        self.assertEqual({p.name:p.read_bytes() for p in self.source.iterdir()},before)
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name).resolve()
         self.source=self.root/'card';self.source.mkdir();self.backup=self.root/'backup';self.backup.mkdir()
@@ -164,7 +174,7 @@ class SelectedPhotoCleanupTests(CleanupTests):
         values={'mode':'legacy','detect':False,'min_frames':45,'tolerance':15}
         self.org.preferences({'values':values})
         fresh=app.Organizer(self.org.store)
-        self.assertEqual(fresh.preferences({}),values)
+        self.assertEqual(fresh.preferences({}),{k:v for k,v in values.items() if k!='mode'}) # Removed mode is intentionally ignored.
 
 class ContinueCleanupTests(CleanupTests):
     def delete_one(self):

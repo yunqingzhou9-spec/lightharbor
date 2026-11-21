@@ -115,7 +115,7 @@ class BatchTests(unittest.TestCase):
         self.assertFalse(list(self.b.iterdir()))
     def test_same_batch_equal_content_requires_decision_and_skips_verified_copy(self):
         self.file(self.a,'same.jpg',b'equal');self.file(self.b,'same.jpg',b'equal')
-        self.scan([self.a,self.b]);p=self.prepare();self.assertEqual(p['preflight']['duplicates'],1)
+        self.scan([self.a,self.b],duplicate_mode='content');p=self.prepare();self.assertEqual(p['preflight']['duplicates'],1)
         with self.assertRaises(ValueError):self.org.start_copy(self.ident())
         s=self.execute('skip');self.assertEqual(s['result_counts'],{'已复制':1,'重复跳过':1,'失败':0})
         self.assertEqual(len({r['target'] for r in s['results']}),1)

@@ -198,6 +198,29 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
             return has_jpeg and ((row['kind']=='照片' and ext in ('.jpg','.jpeg')) or (ext in ('.xmp','.aae') and row.get('format')=='JPEG'))
         return [r for r in rows if allowed(r)]
 
+    def copy_destinations(self, payload):
+        """Read-only, complete destination summary derived from the current plan.
+
+        In ready state these are planned folders; preflight may safely number
+        colliding files without changing their parent. Never alter copy scope.
+        """
+        with self.lock:
+            self._check(payload, ('ready','reviewing'))
+            if self.plan['options'].get('cleanup_only'):
+                raise ValueError('清理扫描不能用于复制')
+            folders={}
+            rows=self.active_rows()
+            for row in rows:
+                target=self.destination / row['target']
+                path=str(target.parent)
+                entry=folders.setdefault(path,{'path':path,'files':0,'bytes':0,'formats':set()})
+                entry['files']+=1;entry['bytes']+=row['size']
+                entry['formats'].add(row.get('format') or row['kind'])
+            return {'destination':str(self.destination), 'files':len(rows),
+                    'bytes':sum(r['size'] for r in rows),
+                    'checked':self.state['phase']=='reviewing',
+                    'rows':[dict(v,formats=sorted(v['formats'])) for _,v in sorted(folders.items())]}
+
     def set_scope(self, payload):
         import planner
         with self.lock:
@@ -207,6 +230,11 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
                 if self.plan['options'].get('cleanup_only'):raise ValueError('清理扫描不能调整复制格式')
                 if payload.get('value') not in ('both','raw','jpg'):raise ValueError('复制格式无效')
                 self.plan['copy_format']=payload['value']
+                scope=self.plan.get('scope',{'mode':'all','shots':[]})
+            elif mode == 'separate_formats':
+                if self.plan['options'].get('cleanup_only'):raise ValueError('清理扫描不能调整复制格式')
+                if type(payload.get('value')) is not bool:raise ValueError('格式分离设置无效')
+                self.plan['options']['separate_formats']=payload['value']
                 scope=self.plan.get('scope',{'mode':'all','shots':[]})
             elif mode == 'all': scope = {'mode': 'all', 'shots': []}
             elif mode == 'toggle_shots':
@@ -310,7 +338,7 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
                     self.history = []
                     self.init_insights()
                     self.state = {'phase': 'ready', 'results': [], 'warnings': [], 'current': '',
-                                  'version': 3, 'resume_notice': '已恢复调整和复制范围。请检查并确认，已有副本需要你选择是否跳过。'}
+                                  'version': 3, 'resume_notice': '已恢复清理扫描。请重新选择并核对要清理的照片，不会自动删除。' if plan['options'].get('cleanup_only') else '已恢复调整和复制范围。请检查并确认，已有副本需要你选择是否跳过。'}
                     self._publish(); self.save_task()
             except Exception as exc:
                 with self.lock: self.state.update(phase='ready' if self.plan else 'idle', current='', error=str(exc))
@@ -423,7 +451,7 @@ class CopyWorkflow(CardCleanup, OrganizerInsights):
                         if self.cancel.is_set(): raise InterruptedError('已停止检查')
                     for row, rel in proposals:
                         row['target'] = rel; reserved.add(key(dest / rel)); renamed += int(bool(suffix))
-                        if self.plan['options'].get('layout_version')==2:
+                        if self.plan['options'].get('layout_version')==2 and self.duplicate_mode()=='content' and row.get('source_hash'):
                             signature=(row.get('source_hash'),Path(row['source']).suffix.casefold())
                             if not row.get('duplicate_target') and signature in batch_hashes:
                                 row['duplicate_target']=batch_hashes[signature];row['batch_duplicate']=True

@@ -2,11 +2,19 @@
 
 让底片，回到各自的位置。本地照片与延时摄影整理工具，复制保留原件，照片不上传。
 
-当前版本：**Mac 1.5.0** · **Windows 1.5.0 x64 便携预览版**。
+当前版本：**Mac 1.6.1** · **Windows 1.5.0 x64 便携预览版**。
 
-- [下载 Mac 1.5.0](https://github.com/yunqingzhou9-spec/lightharbor/releases/tag/v1.5.0)：macOS 13 及以上，Apple 芯片 / Intel 通用二进制。
+- [下载 Mac 1.6.1](https://github.com/yunqingzhou9-spec/lightharbor/releases/tag/v1.6.1)：macOS 13 及以上，Apple 芯片 / Intel 通用二进制。
 - [下载 Windows 1.5.0 x64 预览版](https://github.com/yunqingzhou9-spec/lightharbor/releases/tag/v1.5.0-windows-preview)：Windows 10/11 Intel / AMD 64 位。完整解压后运行 `Start-LightHarbor.cmd`，需要 WebView2 Runtime 与 .NET Framework 4.8，无需另装 Python。
 - [版本与验证范围](RELEASE.md) · [反馈问题](https://github.com/yunqingzhou9-spec/lightharbor/issues)
+
+## Mac 1.6.1 更新
+
+- 重新设计整理流程，支持整批保存与逐张挑选；扫描后直接进入照片浏览，复制格式与核对操作集中显示。
+- 大图查看器支持居中浏览、独立低清/高清预览、双击缩放、拖动和右侧照片信息；空格切换选中状态，方向键翻页。
+- 来源与保存位置直接打开系统文件夹选择窗口；多来源可单独管理。扫描读取时显示实际数量与阶段，成功完成后显示100%。
+- 新任务默认按文件名检查已有文件，也可选择内容核对；恢复旧任务保留原规则。
+- 关闭窗口后后台继续，重新激活恢复原页面；使用菜单、Dock退出或⌘Q安全结束应用。
 
 ## 1.5.0 整理优化
 
@@ -36,6 +44,8 @@ Windows：完整解压 ZIP，运行 `Start-LightHarbor.cmd`；不要直接在压
 清理仅支持单一来源，不随多来源复制扩大删除范围。默认直接清理，也可选择“核对备份后清理”，该模式要求另一磁盘卷上的完整一致备份。最终确认会**永久删除所选照片及可靠关联文件，不经过废纸篓**；视频和未关联文件不纳入照片清理。日志保存在本机任务目录旁的 cleanup-logs。
 
 ## 验证范围与平台差异
+
+Mac1.6.1已通过针对性测试、独立行为验证与审查，以及浏览器、Mac WebKit、安装包和本机启动核对。完整回归仍有4项历史日期假设失败，不声称全套通过。Windows下载保持已发布1.5.0预览，本次未更新Windows安装包；本标签源码在Windows的原生运行未验证。
 
 Mac 在 Apple 芯片本机完成包与启动验证，构建和签名核对包含 arm64 / x86_64；未宣称 Intel 实机验证。Mac 使用临时签名，**未做 Developer ID 签名或 Apple 公证**。
 

@@ -74,7 +74,8 @@ def row_source_root(row, sources):
 
 
 class Probe:
-    def __init__(self):
+    def __init__(self, cancelled=lambda: False):
+        self.cancelled = cancelled
         self.proc = None
         helper = Path(os.environ.get('LIGHTHARBOR_MEDIA_PROBE', str(BASE / 'media-probe')))
         if os.name != 'nt' and helper.is_file():
@@ -90,10 +91,22 @@ class Probe:
         try:
             self.proc.stdin.write(json.dumps({'path': str(path)}) + '\n')
             self.proc.stdin.flush()
-            if not select.select([self.proc.stdout], [], [], 45)[0]:
-                self.close()
-                return {'warning': '拍摄时间读取超时；后续图片使用文件修改日期'}
-            return json.loads(self.proc.stdout.readline())
+            deadline = time.monotonic() + 45
+            response = bytearray()
+            while time.monotonic() < deadline:
+                if self.cancelled(): raise InterruptedError('已停止扫描')
+                if not select.select([self.proc.stdout], [], [], min(.05, max(0, deadline-time.monotonic())))[0]: continue
+                chunk = os.read(self.proc.stdout.fileno(), 65536)
+                if not chunk: raise ValueError('读取组件已退出')
+                response.extend(chunk)
+                if b'\n' in response:
+                    if self.cancelled(): raise InterruptedError('已停止扫描')
+                    return json.loads(response.split(b'\n', 1)[0])
+            self.close()
+            return {'warning': '拍摄时间读取超时；后续图片使用文件修改日期'}
+        except InterruptedError:
+            self.close()
+            raise
         except (OSError, ValueError):
             self.close()
             return {'warning': '图片读取组件异常；使用文件修改日期'}
@@ -114,13 +127,14 @@ def scan(source, destination, options, progress=lambda *_: None, cancelled=lambd
     else:
         source, destination = valid_roots(source, destination)
     rows, warnings = [], []
-    probe = Probe()
+    probe = Probe(cancelled)
     try:
         def walk_error(error): warnings.append(str(error))
         for folder, dirs, files in os.walk(source, followlinks=False, onerror=walk_error):
+            if cancelled(): raise InterruptedError('已停止扫描')
             dirs[:] = sorted(d for d in dirs if not d.startswith('.') and not Path(folder, d).is_symlink())
             for name in sorted(files):
-                if cancelled(): return rows, warnings
+                if cancelled(): raise InterruptedError('已停止扫描')
                 p = Path(folder, name)
                 if name.startswith('.') or p.is_symlink(): continue
                 try:
@@ -142,6 +156,7 @@ def scan(source, destination, options, progress=lambda *_: None, cancelled=lambd
                     parts = [date.strftime('%Y'), date.strftime('%Y-%m-%d'), media_kind]
                     rows.append({'source': str(p), 'source_root':str(source), 'source_label':source.name, 'relative': p.relative_to(source).as_posix(), 'target': Path(*parts, name).as_posix(), 'size': fp[2], 'fingerprint': fp, 'date_source': date_source, 'date':date.strftime('%Y-%m-%d'), 'capture_time':date.isoformat(), 'reliable_time':reliable, 'camera':meta.get('camera',''), 'kind':media_kind, 'location': place, 'scene': scene, 'confidence': round(confidence, 3), 'warning': meta.get('warning', '')})
                     progress(len(rows), str(p.relative_to(source)))
+                except InterruptedError: raise
                 except (OSError, ValueError) as exc: warnings.append(f'{p.relative_to(source)}：{exc}')
     finally: probe.close()
     return rows, warnings
@@ -287,6 +302,7 @@ class Organizer(CopyWorkflow):
             requested = payload.get('sources') or [payload.get('source')]
             if not payload.get('destination'):raise ValueError('请填写来源和目标路径')
             options=dict(payload.get('options',{}))
+            if options.get('initial_selection','all') not in ('all','none'):raise ValueError('初始选择设置无效')
             # This policy applies only to new scans. Saved tasks retain their options.
             options.update(mode='groups', date=True, type=True, separate_timelapse=True, location=False, scene=False, date_only=True)
             if options.get('cleanup_only'):
@@ -296,7 +312,8 @@ class Organizer(CopyWorkflow):
                 roots = [source]
             else:
                 roots,dest=valid_sources(requested,payload['destination']); source=roots[0]
-                options.update(layout_version=2, duplicate_mode='content')
+                options.update(layout_version=2)
+                options.setdefault('duplicate_mode','name')
                 if type(options.get('separate_formats', True)) is not bool: raise ValueError('格式分离设置无效')
                 options.setdefault('separate_formats', True)
             if options.get('duplicate_mode','name') not in ('name','content'):raise ValueError('查重方式无效')
@@ -308,6 +325,13 @@ class Organizer(CopyWorkflow):
             self.state={'phase':'scanning','scan_stage':'reading','count':0,'current':'','warnings':[],'results':[],'version':3,'source':str(source),'sources':[str(r) for r in roots],'destination':str(dest),'options':options}
         threading.Thread(target=self._scan,args=(options,previous),daemon=True).start()
 
+    def request_cancel(self, payload):
+        # Linearize a scan stop against its final publish/save transaction.
+        with self.lock:
+            if payload.get('operation') == 'scan' and self.state['phase'] != 'scanning':
+                raise ValueError('扫描已结束，无需停止。')
+            self.cancel.set()
+
     def _scan(self,options,previous=None):
         try:
             def progress(n,name):
@@ -318,9 +342,12 @@ class Organizer(CopyWorkflow):
                 found,issues=scan(root,self.destination,options,lambda n,name:progress(base+n,root.name+' / '+name),self.cancel.is_set)
                 rows.extend(found);warnings.extend(issues)
                 if self.cancel.is_set(): break
+            if self.cancel.is_set(): raise InterruptedError('已停止扫描')
             with self.lock:self.state.update(scan_stage='grouping',current='正在整理日期与拍摄组')
             plan=planner.build_plan(rows,options)
+            if self.cancel.is_set(): raise InterruptedError('已停止扫描')
             if previous: planner.reconcile_scan(plan,previous)
+            elif options.get('initial_selection')=='none':plan['scope']={'mode':'photos','shots':[]}
             plan['sources']=[str(r) for r in self.sources]
             with self.lock:
                 self.rows=rows;self.plan=plan;self.revision=1
@@ -328,11 +355,19 @@ class Organizer(CopyWorkflow):
                 self.apply_archive_layout()
                 with self.lock:self.state.update(scan_stage='imports',current='正在检查已有副本')
                 self.assess_imports()
+            if self.cancel.is_set(): raise InterruptedError('已停止扫描')
             with self.lock:
-                final_phase='cancelled' if self.cancel.is_set() else 'ready'
+                if self.cancel.is_set(): raise InterruptedError('已停止扫描')
+                final_phase='ready'
                 self.state.update(warnings=warnings,metadata_warnings=sum(bool(r['warning']) for r in rows),fallback_dates=sum(not r['reliable_time'] for r in rows))
                 self._publish(); self.save_task(phase=final_phase)
                 self.state['phase']=final_phase
+        except InterruptedError as exc:
+            with self.lock:
+                if self.cancel.is_set():
+                    self.plan=None;self.rows=[]
+                    self.state.update(phase='cancelled',current='',error='')
+                else: self.state.update(phase='error',error=str(exc))
         except Exception as exc:
             with self.lock:self.state.update(phase='error',error=str(exc))
 
@@ -524,6 +559,7 @@ def make_handler(organizer, token):
                 elif self.path == '/api/scope': organizer.set_scope(payload)
                 elif self.path == '/api/resume': organizer.resume_task(payload)
                 elif self.path == '/api/duplicates': return self.send(organizer.duplicate_page(payload))
+                elif self.path == '/api/copy_destinations': return self.send(organizer.copy_destinations(payload))
                 elif self.path == '/api/copy_preview':
                     with organizer.lock:
                         organizer._check(payload,('reviewing',))
@@ -536,7 +572,7 @@ def make_handler(organizer, token):
                 elif self.path == '/api/preferences': return self.send(organizer.preferences(payload))
                 elif self.path == '/api/photo_catalog': return self.send(organizer.photo_catalog(payload))
                 elif self.path == '/api/thumbnail': return self.send(organizer.thumbnail(payload))
-                elif self.path == '/api/cancel': organizer.cancel.set()
+                elif self.path == '/api/cancel': organizer.request_cancel(payload)
                 elif self.path == '/api/choose':
                     multiple = payload.get('target') == 'source' and payload.get('multiple') is True
                     if os.name == 'nt':

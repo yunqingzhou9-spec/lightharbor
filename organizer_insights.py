@@ -22,8 +22,8 @@ class OrganizerInsights:
         self.copy_finished = None
 
     def duplicate_mode(self):
-        if self.plan.get('options',{}).get('layout_version')==2:return 'content'
-        return self.plan.get('options',{}).get('duplicate_mode','name')
+        options=self.plan.get('options',{})
+        return options.get('duplicate_mode','content' if options.get('layout_version')==2 else 'name')
 
     @staticmethod
     def name_key(path):
@@ -249,7 +249,9 @@ class OrganizerInsights:
                 item = self.history_record(payload['history_id'])
                 folders = item['folders']; root = Path(item['destination'])
             else:
-                self._check(payload, ('done','cancelled','error'))
+                # A successful batch returns to ready for immediate picking. Opening
+                # its current destination is read-only and remains plan/revision-bound.
+                self._check(payload, ('ready','done','cancelled','error'))
                 folders = self.completion_summary(self.state.get('results',[]))['folders']; root = self.destination
                 if root and root.is_dir():folders=[*folders,{'path':str(root)}]
             folder = next((Path(f['path']) for f in folders if f['path'] == payload.get('folder')), None)

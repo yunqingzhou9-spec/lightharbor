@@ -153,16 +153,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
     func fail(_ message: String) { statusLabel.stringValue = message }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { window.makeKeyAndOrderFront(nil); return true }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { NSApp.terminate(nil); return false }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { return true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { return false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if terminated || engine?.isRunning != true { return .terminateNow }
         if quitting { return .terminateCancel }
-        let alert = NSAlert(); alert.messageText = "退出拾光？"
-        alert.informativeText = ["scanning", "preparing", "copying", "paused"].contains(phase)
-            ? "当前任务会安全停止。已完成的副本保留，未完成的复制会清理；原件不受影响。已生成的整理计划会保存在本机，下次恢复后核对并确认即可继续。扫描中退出可在下次重新扫描。"
-            : "整理计划和复制范围会保存在本机。下次可恢复任务，重新核对并确认后继续。已经整理的文件和原件不受影响。"
-        alert.addButton(withTitle: "继续使用"); alert.addButton(withTitle: "退出")
-        guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
         quitting = true; webView.isHidden = true
         statusLabel.stringValue = "正在安全停止，请稍候…"
         do { try input.fileHandleForWriting.write(contentsOf: Data("shutdown\n".utf8)); try input.fileHandleForWriting.close() }

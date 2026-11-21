@@ -2,10 +2,10 @@
 
 让底片，回到各自的位置。本地照片与延时摄影整理工具，复制保留原件，照片不上传。
 
-当前版本：**Mac 1.6.1** · **Windows 1.5.0 x64 便携预览版**。
+当前版本：**Mac 1.6.1** · **Windows 1.6.1 x64 便携预览版**。
 
 - [下载 Mac 1.6.1](https://github.com/yunqingzhou9-spec/lightharbor/releases/tag/v1.6.1)：macOS 13 及以上，Apple 芯片 / Intel 通用二进制。
-- [下载 Windows 1.5.0 x64 预览版](https://github.com/yunqingzhou9-spec/lightharbor/releases/tag/v1.5.0-windows-preview)：Windows 10/11 Intel / AMD 64 位。完整解压后运行 `Start-LightHarbor.cmd`，需要 WebView2 Runtime 与 .NET Framework 4.8，无需另装 Python。
+- [下载 Windows 1.6.1 x64 预览版](https://github.com/yunqingzhou9-spec/lightharbor/releases/tag/v1.6.1-windows-preview)：Windows 10/11 Intel / AMD 64 位。完整解压后运行 `Start-LightHarbor.cmd`，需要 WebView2 Runtime 与 .NET Framework 4.8，无需另装 Python。
 - [版本与验证范围](RELEASE.md) · [反馈问题](https://github.com/yunqingzhou9-spec/lightharbor/issues)
 
 ## Mac 1.6.1 更新
@@ -45,7 +45,7 @@ Windows：完整解压 ZIP，运行 `Start-LightHarbor.cmd`；不要直接在压
 
 ## 验证范围与平台差异
 
-Mac1.6.1已通过针对性测试、独立行为验证与审查，以及浏览器、Mac WebKit、安装包和本机启动核对。完整回归仍有4项历史日期假设失败，不声称全套通过。Windows下载保持已发布1.5.0预览，本次未更新Windows安装包；本标签源码在Windows的原生运行未验证。
+Mac1.6.1已通过针对性测试、独立行为验证与审查，以及浏览器、Mac WebKit、安装包和本机启动核对。完整回归仍有4项历史日期假设失败，不声称全套通过。Windows1.6.1为同步新版流程的x64便携预览，保留自定义目录缩略图窗口；尚未Windows实机验证，Mac1.6.1仍为最新正式版。
 
 Mac 在 Apple 芯片本机完成包与启动验证，构建和签名核对包含 arm64 / x86_64；未宣称 Intel 实机验证。Mac 使用临时签名，**未做 Developer ID 签名或 Apple 公证**。
 

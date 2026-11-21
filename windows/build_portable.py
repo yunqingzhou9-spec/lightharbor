@@ -49,7 +49,7 @@ def adapt_frontend(html):
     html = html.replace('景物 · 离线识别画面', '景物识别 · Windows 版暂不支持').replace('在访达中打开', '在文件资源管理器中打开')
     html = html.replace("(state.destination||'').split('/')", "(state.destination||'').replaceAll('\\\\','/').split('/')")
     # Compatibility only: old hidden scene setting cannot enable an unsupported model.
-    html = html.replace('</script>', "\nconst winRender=render;render=function(force=false){winRender(force);const scene=$('scene');if(scene){scene.checked=false;scene.disabled=true;}};\n</script>")
+    html = html.replace('</script>', "\nconst winRender=render;render=function(force=false){winRender(force);const scene=$('scene');if(scene){scene.checked=false;scene.disabled=true;}};\n</script>", 1)
     return html
 
 

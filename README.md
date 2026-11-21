@@ -2,11 +2,20 @@
 
 让底片，回到各自的位置。本地照片与延时摄影整理工具，复制保留原件，照片不上传。
 
-当前版本：**Mac 1.6.1** · **Windows 1.6.1 x64 便携预览版**。
+## 下载
 
-- [下载 Mac 1.6.1](https://github.com/yunqingzhou9-spec/lightharbor/releases/tag/v1.6.1)：macOS 13 及以上，Apple 芯片 / Intel 通用二进制。
-- [下载 Windows 1.6.1 x64 预览版](https://github.com/yunqingzhou9-spec/lightharbor/releases/tag/v1.6.1-windows-preview)：Windows 10/11 Intel / AMD 64 位。完整解压后运行 `Start-LightHarbor.cmd`，需要 WebView2 Runtime 与 .NET Framework 4.8，无需另装 Python。
-- [版本与验证范围](RELEASE.md) · [反馈问题](https://github.com/yunqingzhou9-spec/lightharbor/issues)
+选择与你的系统对应的版本，无需另外安装 Python。
+
+| 你的系统 | 直接下载 | 系统要求 |
+| --- | --- | --- |
+| **Mac** | **[下载 Mac 1.6.1 通用版 · ZIP](https://github.com/yunqingzhou9-spec/lightharbor/releases/download/v1.6.1/LightHarbor-1.6.1-macOS-universal.zip)** | macOS 13 及以上；Apple 芯片 / Intel |
+| **Windows** | **[下载 Windows 1.6.1 x64 预览版 · ZIP](https://github.com/yunqingzhou9-spec/lightharbor/releases/download/v1.6.1-windows-preview/LightHarbor-1.6.1-preview-Windows-x64.zip)** | Windows 10 / 11；Intel / AMD 64 位 |
+
+**Mac 安装：** 解压 ZIP，将 `拾光.app` 拖入“应用程序”，双击打开。尚未经过 Apple 公证，首次打开可能被系统安全机制拦截。
+
+**Windows 启动：** 完整解压 ZIP 后双击 `Start-LightHarbor.cmd`，不要直接在压缩包内运行。需要 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 和 [.NET Framework 4.8](https://dotnet.microsoft.com/download/dotnet-framework/net48)。这是便携预览版，**尚未 Windows 实机验证**，不支持 Windows ARM 原生运行。
+
+[Mac 版本说明与校验文件](https://github.com/yunqingzhou9-spec/lightharbor/releases/tag/v1.6.1) · [Windows 版本说明与校验文件](https://github.com/yunqingzhou9-spec/lightharbor/releases/tag/v1.6.1-windows-preview) · [全部历史版本](https://github.com/yunqingzhou9-spec/lightharbor/releases) · [反馈问题](https://github.com/yunqingzhou9-spec/lightharbor/issues)
 
 ## Mac 1.6.1 更新
 
